@@ -34,7 +34,7 @@ class DiscordMudClient(discord.Client):
     async def on_ready(self):
         await self.change_presence(activity=discord.Game(name="DM to Play"))
         print(f'--- DiscordMudClient Online as {self.user} ---')
-        
+
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
@@ -42,20 +42,21 @@ class DiscordMudClient(discord.Client):
     async def shutdown(self):
         if self.is_shutting_down: return
         self.is_shutting_down = True
-        self.log_event("SYSTEM", "CORE", "Shutdown signal received. Notifying users...")
-        
-        tasks = [self.notify_and_close(uid, s[1], s[2]) for uid, s in self.sessions.items()]
+        self.log_event("SYSTEM", "CORE", "Shutdown signal received. Closing all sessions...")
+
+        tasks = [self.notify_and_close(uid, s[1], s[2], s[3]) for uid, s in self.sessions.items()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         await self.close()
 
-    async def notify_and_close(self, user_id, writer, channel):
+    async def notify_and_close(self, user_id, writer, channel, username):
         try:
+            self.log_event(user_id, username, "Closing session due to bot shutdown.")
             await channel.send("🛑 **Bot Shutdown:** Bridge closing. Your session has ended.")
             writer.close()
             await writer.wait_closed()
-        except: pass 
+        except: pass
 
     async def flush_buffer(self, user_id, username, channel):
         buf = self.buffers.get(user_id, "")
@@ -63,7 +64,7 @@ class DiscordMudClient(discord.Client):
 
         while len(buf) > 0:
             if self.is_shutting_down: break
-            
+
             limit = 1900
             split_at = buf.rfind('\n', 0, limit)
             if split_at == -1 or split_at < 500:
@@ -73,14 +74,13 @@ class DiscordMudClient(discord.Client):
             if chunk.strip():
                 try:
                     await channel.send(f"```ansi\n{chunk}\n```")
-                    # Internal rate limit: pause slightly between chunks
-                    await asyncio.sleep(0.6) 
+                    await asyncio.sleep(0.6)
                 except discord.HTTPException:
-                    await asyncio.sleep(2) # Back off on rate limit
+                    await asyncio.sleep(2) 
                     break
-            
+
             buf = buf[split_at:].lstrip('\n')
-        
+
         self.buffers[user_id] = ""
 
     async def mud_listener(self, user_id, channel, username):
@@ -89,21 +89,24 @@ class DiscordMudClient(discord.Client):
         try:
             while True:
                 data = await reader.read(8192)
-                if not data: break
+                if not data:
+                    self.log_event(user_id, username, "Connection closed by remote MUD host.")
+                    break
 
                 raw_text = self.parse_stream(user_id, data, writer, username)
-                
                 current_buf = self.buffers.get(user_id, "")
                 self.buffers[user_id] = (current_buf + raw_text)[-MAX_BUFFER_SIZE:]
 
                 await asyncio.sleep(0.05)
                 await self.flush_buffer(user_id, username, channel)
-        except Exception: pass 
+        except Exception as e:
+            self.log_event(user_id, username, f"Listener Error: {str(e)}")
         finally:
             if not self.is_shutting_down:
                 try: await channel.send("⚠️ *Connection closed.*")
                 except: pass
             self.sessions.pop(user_id, None)
+            self.log_event(user_id, username, "Session cleaned up and removed.")
 
     def parse_stream(self, user_id, data, writer, username):
         output = bytearray()
@@ -135,7 +138,8 @@ class DiscordMudClient(discord.Client):
                                          bytes([Telnet.IAC, Telnet.SE])
                                 writer.write(packet)
                                 asyncio.create_task(writer.drain())
-                        i = end + 2 if end != -1 else len(data)
+                            i = end + 2
+                        else: i = len(data)
                     else: i += 2
                 except: i += 1
             else:
@@ -155,24 +159,28 @@ class DiscordMudClient(discord.Client):
         if user_id not in self.sessions:
             if user_id in self.connecting: return
             self.connecting.add(user_id)
+            self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT}...")
+
             try:
                 reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT)
                 sock = writer.get_extra_info('socket')
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                self.sessions[user_id] = (reader, writer, message.channel, display_name)
                 
+                self.sessions[user_id] = (reader, writer, message.channel, display_name)
+                self.log_event(user_id, display_name, "Successfully connected to MUD.")
+
                 await self.send_telnet_cmd(writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
                 await self.send_telnet_cmd(writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)
                 await self.send_naws(writer)
-                
+
                 asyncio.create_task(self.mud_listener(user_id, message.channel, display_name))
                 self.connecting.discard(user_id)
-            except:
+            except Exception as e:
                 self.connecting.discard(user_id)
+                self.log_event(user_id, display_name, f"Connection failed: {str(e)}")
                 await message.channel.send("❌ Could not connect to MUD.")
             return
 
-        # Strip Telnet IAC (0xFF) to prevent command injection
         sanitized_input = message.content.replace('\xff', '')
         _, writer, _, _ = self.sessions[user_id]
         try:
@@ -181,7 +189,8 @@ class DiscordMudClient(discord.Client):
             if user_id in self.echo_off:
                 try: await message.delete()
                 except: pass
-        except:
+        except Exception as e:
+            self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
             self.sessions.pop(user_id, None)
 
     async def send_telnet_cmd(self, writer, *args):
@@ -202,7 +211,7 @@ class DiscordMudClient(discord.Client):
 if __name__ == "__main__":
     intents = discord.Intents.default()
     intents.message_content = True
-    intents.members = True 
+    intents.members = True
     client = DiscordMudClient(intents=intents)
     client.run(TOKEN)
 
