@@ -15,12 +15,22 @@ class MudCommands(commands.Cog):
         user = interaction.user
         user_id = user.id
 
-        if self.bot.session_manager.get(user_id):
-            await interaction.response.send_message("❌ You are already playing! Check your DMs.", ephemeral=True)
+        session = self.bot.session_manager.get(user_id)
+        if session:
+            try:
+                await session.channel.send("👋 **You're already connected!** Here is your active session.")
+                await interaction.response.send_message("✅ You're already playing! I've bumped your DMs.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ I couldn't bump your DMs! Please check your privacy settings.", ephemeral=True)
             return
 
         if self.bot.session_manager.is_connecting(user_id):
-            await interaction.response.send_message("⏳ You are already connecting! Please wait a moment.", ephemeral=True)
+            try:
+                dm_channel = user.dm_channel or await user.create_dm()
+                await dm_channel.send("⏳ **Still connecting...** please wait a moment!")
+                await interaction.response.send_message("✅ You're already connecting! I've bumped your DMs.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ I couldn't bump your DMs! Please check your privacy settings.", ephemeral=True)
             return
 
         try:
