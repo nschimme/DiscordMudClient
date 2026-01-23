@@ -199,6 +199,12 @@ class DiscordMudClient(commands.Bot):
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Game(name="DM to Play"))
+        try:
+            synced = await self.tree.sync()
+            print(f"--- Synced {len(synced)} slash commands ---")
+        except Exception as e:
+            print(f"--- Failed to sync slash commands: {e} ---")
+
         print(f'--- DiscordMudClient Online as {self.user} ---')
 
         loop = asyncio.get_running_loop()
@@ -278,7 +284,8 @@ class DiscordMudClient(commands.Bot):
             self.log_event(user_id, username, "Session cleaned up and removed.")
 
 
-    @commands.command(name="disconnect")
+    @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
+    @commands.dm_only()
     async def disconnect_cmd(self, ctx):
         user_id = ctx.author.id
         if user_id in self.sessions:
@@ -291,7 +298,8 @@ class DiscordMudClient(commands.Bot):
         else:
             await ctx.send("❌ You are not currently connected.")
 
-    @commands.command(name="return")
+    @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
+    @commands.dm_only()
     async def return_cmd(self, ctx):
         user_id = ctx.author.id
         if user_id in self.sessions:
