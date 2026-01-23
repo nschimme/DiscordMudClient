@@ -1,6 +1,6 @@
 # Discord Mud Client
 
-A simple Discord bot that acts as a MUD client to play a configured MUD over DMs.
+A simple Discord bot that acts as a MUD client over DMs.
 
 ---
 
@@ -17,21 +17,40 @@ A simple Discord bot that acts as a MUD client to play a configured MUD over DMs
      - `Message Content Intent` (Required to read MUD commands)
 4. Save Changes.
 
-### 2. Environment Variables
-Create a .env file in the root directory and paste your token:
+### 2. Install
+Choose one of the following:
 
-```text
-DISCORD_TOKEN=YourBotTokenHere
-MUD_HOST=mume.org
-MUD_PORT=4242
-MUD_SCHEME=telnets   # 'telnet', 'telnets', 'ws', 'wss'
-MUD_PATH=/           # Path for connections (mostly for websockets)
+**A. Use the pre-built image (Recommended)**
+Create a `docker-compose.yml` file:
+```yaml
+version: '3.8'
+services:
+  mume-bot:
+    image: ghcr.io/nschimme/discordmudclient:latest
+    restart: unless-stopped
+    env_file: .env
+    tty: true
+    stdin_open: true
 ```
 
-### 3. Install
-1. Run: `docker-compose up --build -d`
-2. Install your App into your Discord Channel
-3. DM the Discord Bot to play.
+**B. Clone the source**
+```bash
+git clone https://github.com/nschimme/DiscordMudClient.git
+cd DiscordMudClient
+```
+
+### 3. Configure & Run
+1. Create a `.env` file in the same folder:
+   ```text
+   DISCORD_TOKEN=YourBotTokenHere
+   MUD_HOST=mume.org
+   MUD_PORT=4242
+   MUD_SCHEME=telnets   # 'telnet', 'telnets', 'ws', 'wss'
+   MUD_PATH=/           # Path for connections (mostly for websockets)
+   ```
+2. Start the bot: `docker-compose up -d`
+3. Install your App into your Discord Channel
+4. DM the Discord Bot to play.
 
 ---
 
@@ -39,7 +58,7 @@ MUD_PATH=/           # Path for connections (mostly for websockets)
 Available Slash Commands:
 
 - `/play`: Start playing the default MUD in DMs.
-- `/connect [url]`: (DM Only) Connect to a specific MUD.
+- `/connect <url>`: (DM Only) Connect to a specific MUD.
     - Example: `/connect telnet://mume.org:4242`
     - Supported protocols: `telnet://`, `telnets://`, `ws://`, `wss://`.
     - Defaults to `telnets://` if no protocol is provided.
