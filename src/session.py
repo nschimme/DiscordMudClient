@@ -12,12 +12,32 @@ class MudSession:
         self.writer = writer
         self.channel = channel
         self.username = username
-        self.protocol = TelnetProtocol(self.client, writer, user_id, username)
+        self.protocol = TelnetProtocol(self.client, writer, user_id, username, session=self)
         self.echo_off = False
         self.buffer = ""
         self.msg_queue = asyncio.Queue()
+        self.activity_event = asyncio.Event()
         self.worker_task = asyncio.create_task(self.worker())
+        self.heartbeat_task = asyncio.create_task(self.gmcp_heartbeat())
         self.listener_task = None
+
+    def notify_activity(self):
+        self.activity_event.set()
+        self.activity_event.clear()
+
+    async def gmcp_heartbeat(self):
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(self.activity_event.wait(), timeout=45.0)
+                except asyncio.TimeoutError:
+                    if self.protocol and self.protocol.gmcp.enabled:
+                        await self.protocol.gmcp.send("Core.Ping", self.protocol.gmcp.last_rtt)
+                except Exception as e:
+                    self.client.log_event(self.user_id, self.username, f"Heartbeat error: {e}")
+                    await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
 
     async def worker(self):
         try:
@@ -54,6 +74,8 @@ class MudSession:
     def stop(self):
         if self.worker_task:
             self.worker_task.cancel()
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
         if self.listener_task and self.listener_task != asyncio.current_task():
             self.listener_task.cancel()
 

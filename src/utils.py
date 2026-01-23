@@ -1,4 +1,33 @@
 import urllib.parse
+import os
+import subprocess
+
+def get_version():
+    """
+    Retrieves the application version.
+    1. Checks for src/VERSION file (created during build).
+    2. Tries to get the short git SHA.
+    3. Falls back to 'dev'.
+    """
+    # 1. Check for VERSION file
+    version_file = os.path.join(os.path.dirname(__file__), 'VERSION')
+    if os.path.exists(version_file):
+        try:
+            with open(version_file, 'r') as f:
+                return f.read().strip()
+        except:
+            pass
+
+    # 2. Try git
+    try:
+        sha = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                    stderr=subprocess.DEVNULL).decode('ascii').strip()
+        return f"sha-{sha}"
+    except:
+        pass
+
+    # 3. Fallback
+    return "dev"
 
 def parse_mud_url(url_str):
     """

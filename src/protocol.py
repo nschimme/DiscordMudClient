@@ -2,6 +2,7 @@ import asyncio
 import codecs
 import zlib
 from .config import MAX_BUFFER_SIZE, ANSI_TIMEOUT
+from .gmcp import GmcpHandler
 
 class DecompressionError(Exception):
     """Raised when MCCP decompression fails."""
@@ -11,6 +12,7 @@ class Telnet:
     IAC, DONT, DO, WONT, WILL = 255, 254, 253, 252, 251
     SB, SE = 250, 240
     ECHO, TTYPE, NAWS, CHARSET, COMPRESS2 = 1, 24, 31, 42, 86
+    GMCP = 201
     IS, SEND, REQUEST, ACCEPTED, REJECTED = 0, 1, 1, 2, 3
     NOP = 241
 
@@ -54,11 +56,12 @@ class AnsiLayer:
 
 class TelnetProtocol:
     """Handles Telnet protocol state machine and outgoing packet construction."""
-    def __init__(self, client, writer, user_id, username):
+    def __init__(self, client, writer, user_id, username, session=None):
         self.client = client
         self.writer = writer
         self.user_id = user_id
         self.username = username
+        self.session = session
         self.state = "DATA"
         self.sb_option = None
         self.sb_data = bytearray()
@@ -66,8 +69,11 @@ class TelnetProtocol:
         self.ansi = AnsiLayer()
         self.compressing = False
         self.decompressor = None
+        self.gmcp = GmcpHandler(self)
 
     def feed(self, data: bytes):
+        if data and self.session:
+            self.session.notify_activity()
         self._feed_internal(data)
         return self.ansi.get_output()
 
@@ -141,7 +147,9 @@ class TelnetProtocol:
         pass
 
     def handle_command(self, cmd, opt):
-        if opt == Telnet.ECHO:
+        if opt == Telnet.GMCP and cmd == Telnet.WILL:
+            asyncio.create_task(self.gmcp.enable())
+        elif opt == Telnet.ECHO:
             asyncio.create_task(self.send_command((Telnet.DO if cmd == Telnet.WILL else Telnet.DONT), Telnet.ECHO))
             session = self.client.session_manager.get(self.user_id)
             if session:
@@ -163,7 +171,9 @@ class TelnetProtocol:
             asyncio.create_task(self.send_command(Telnet.DO, Telnet.COMPRESS2))
 
     def handle_subnegotiation(self, opt, data):
-        if opt == Telnet.COMPRESS2:
+        if opt == Telnet.GMCP:
+            self.gmcp.handle(data)
+        elif opt == Telnet.COMPRESS2:
             self.compressing = True
             self.decompressor = zlib.decompressobj()
         elif opt == Telnet.TTYPE and len(data) > 0 and data[0] == Telnet.SEND:
@@ -185,6 +195,8 @@ class TelnetProtocol:
         return data.replace(b'\xff', b'\xff\xff')
 
     async def safe_send(self, data):
+        if data and self.session:
+            self.session.notify_activity()
         try:
             self.writer.write(data)
             await asyncio.wait_for(self.writer.drain(), timeout=ANSI_TIMEOUT)

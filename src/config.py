@@ -1,6 +1,8 @@
 import os
+from .utils import get_version
 
 # --- CONFIGURATION ---
+APP_VERSION = get_version()
 TOKEN = os.getenv('DISCORD_TOKEN')
 MUD_HOST = os.getenv('MUD_HOST', 'mume.org')
 MUD_PORT = os.getenv('MUD_PORT', '4242')
