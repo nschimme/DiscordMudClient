@@ -9,8 +9,8 @@ class MudCommands(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="play", description="Start playing the MUD in DMs")
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
     async def play_slash(self, interaction: discord.Interaction):
         user = interaction.user
         user_id = user.id
