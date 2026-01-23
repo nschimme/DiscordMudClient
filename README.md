@@ -21,6 +21,7 @@ A simple Discord bot that acts as a MUD client over DMs.
 Choose one of the following:
 
 **A. Use the pre-built image (Recommended)**
+
 Create a `docker-compose.yml` file:
 ```yaml
 version: '3.8'
