@@ -15,6 +15,7 @@ class Telnet:
     GMCP = 201
     IS, SEND, REQUEST, ACCEPTED, REJECTED = 0, 1, 1, 2, 3
     NOP = 241
+    BEL = 7
 
 class AnsiLayer:
     """Handles ANSI escape sequences."""
@@ -143,6 +144,9 @@ class TelnetProtocol:
         if self.state == "DATA":
             if byte == Telnet.IAC:
                 self.state = "IAC"
+            elif byte == Telnet.BEL:
+                if self.session:
+                    self.session.bell_pending = True
             else:
                 self.ansi.feed_byte(byte)
         elif self.state == "IAC":
@@ -181,8 +185,9 @@ class TelnetProtocol:
                 self.state = "DATA"
 
     def handle_single_byte_command(self, cmd):
-        # We don't currently have special logic for NOP, etc.
-        pass
+        if cmd == Telnet.BEL:
+            if self.session:
+                self.session.bell_pending = True
 
     def handle_command(self, cmd, opt):
         if opt == Telnet.GMCP and cmd == Telnet.WILL:

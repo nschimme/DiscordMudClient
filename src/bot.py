@@ -81,8 +81,9 @@ class DiscordMudClient(commands.Bot):
 
                 try:
                     raw_text = session.protocol.feed(data)
-                    if raw_text:
-                        session.buffer = (session.buffer + raw_text)[-MAX_BUFFER_SIZE:]
+                    if raw_text or getattr(session, 'bell_pending', False):
+                        if raw_text:
+                            session.buffer = (session.buffer + raw_text)[-MAX_BUFFER_SIZE:]
                         await session.msg_queue.put(True)
                 except DecompressionError as e:
                     self.log_event(user_id, username, f"Decompression error: {e}")

@@ -14,6 +14,7 @@ class MudSession:
         self.username = username
         self.protocol = TelnetProtocol(self.client, writer, user_id, username, session=self)
         self.echo_off = False
+        self.bell_pending = False
         self.buffer = ""
         self.msg_queue = asyncio.Queue()
         self.activity_event = asyncio.Event()
@@ -47,17 +48,19 @@ class MudSession:
                 while not self.msg_queue.empty():
                     self.msg_queue.get_nowait()
 
-                while self.buffer and not self.client.is_shutting_down:
+                while (self.buffer or self.bell_pending) and not self.client.is_shutting_down:
                     current_snapshot = self.buffer
                     chunk, remainder = self.manager.split_buffer(current_snapshot)
 
-                    if not chunk.strip():
+                    if not chunk.strip() and not self.bell_pending:
                         self.buffer = self.buffer[len(chunk):].lstrip('\n')
                         if not self.buffer: break
                         continue
 
                     try:
-                        await self.channel.send(f"```ansi\n{chunk}\n```")
+                        mention = f" <@{self.user_id}> 🔔" if self.bell_pending else ""
+                        await self.channel.send(f"```ansi\n{chunk}\n```{mention}")
+                        self.bell_pending = False
                         self.buffer = self.buffer[len(chunk):].lstrip('\n')
                         await asyncio.sleep(0.6)
                     except discord.HTTPException as e:
