@@ -198,7 +198,7 @@ class MudCommands(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="play", description="Start playing the MUD in DMs")
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_messages=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.allowed_installs(guilds=True, users=False)
     async def play_cmd(self, interaction: discord.Interaction):
         user = interaction.user
@@ -212,7 +212,7 @@ class MudCommands(commands.Cog):
 
     @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
     @commands.dm_only()
-    @app_commands.allowed_contexts(guilds=False, dms=True, private_messages=True)
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     async def disconnect_cmd(self, ctx: commands.Context):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -227,7 +227,7 @@ class MudCommands(commands.Cog):
 
     @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
     @commands.dm_only()
-    @app_commands.allowed_contexts(guilds=False, dms=True, private_messages=True)
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     async def return_cmd(self, ctx: commands.Context):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -240,7 +240,7 @@ class MudCommands(commands.Cog):
 
     @commands.hybrid_command(name="password", description="Enter your password securely")
     @commands.dm_only()
-    @app_commands.allowed_contexts(guilds=False, dms=True, private_messages=True)
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     async def password_cmd(self, ctx: commands.Context, *, password: str):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
