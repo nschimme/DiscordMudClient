@@ -350,7 +350,7 @@ class DiscordMudClient(commands.Bot):
             if user_id in self.connecting: return
             self.connecting.add(user_id)
             self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT} (TLS: {MUD_TLS})...")
-            await message.channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*")
+            await message.channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `/help` for available commands)")
 
             try:
                 reader, writer = None, None
@@ -398,14 +398,16 @@ class DiscordMudClient(commands.Bot):
                 await message.channel.send(f"❌ Could not connect: {type(e).__name__}")
             return
 
+        is_password = user_id in self.echo_off
+        if is_password:
+            try: await message.delete()
+            except: pass
+
         sanitized_input = message.content.replace('\xff', '')
         session = self.sessions[user_id]
         try:
             session.writer.write((sanitized_input + "\n").encode('utf-8'))
             await session.writer.drain()
-            if user_id in self.echo_off:
-                try: await message.delete()
-                except: pass
         except Exception as e:
             self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
             self.sessions.pop(user_id, None)
