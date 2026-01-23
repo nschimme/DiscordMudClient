@@ -104,7 +104,7 @@ class TelnetParser:
                 if cmd == Telnet.WILL:
                     if not session.echo_off:
                         session.echo_off = True
-                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** The MUD has disabled echo. Please use `/password <your_password>` for security, as bots cannot delete your messages in DMs."))
+                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** Please use `/password <your_password>` to enter your password securely."))
                 else:
                     session.echo_off = False
         elif opt == Telnet.TTYPE and cmd == Telnet.DO:
@@ -245,6 +245,21 @@ class MudCommands(commands.Cog):
             session.writer.write((password + "\n").encode('utf-8'))
             await session.writer.drain()
             await interaction.response.send_message("🔑 *Password sent securely.*", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+    @app_commands.command(name="send", description="Send a command starting with / to the MUD")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.describe(command="The command to send")
+    async def send_slash(self, interaction: discord.Interaction, command: str):
+        user_id = interaction.user.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions[user_id]
+            session.writer.write((command + "\n").encode('utf-8'))
+            await session.writer.drain()
+            # Respond with the command itself to provide a clean display
+            await interaction.response.send_message(f"`{command}`")
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
@@ -442,7 +457,7 @@ class DiscordMudClient(commands.Bot):
             session = self.sessions[user_id]
             if session.echo_off:
                 # Password mode
-                await message.channel.send("⚠️ **SECURITY WARNING:** You are typing a password while Echo is OFF. **Bots cannot delete user messages in DMs.** Please delete your previous message immediately and use the `/password` Slash Command instead.")
+                await message.channel.send("⚠️ **Security Warning:** Please use the `/password` command to enter your password instead of typing it directly.")
                 sanitized_input = message.content.replace('\xff', '')
                 try:
                     session.writer.write((sanitized_input + "\n").encode('utf-8'))

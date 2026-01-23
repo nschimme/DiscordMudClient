@@ -41,3 +41,4 @@ Available Slash Commands:
 - `/disconnect`: (DM Only) End your current MUD session.
 - `/return`: (DM Only) Send a newline character to the MUD.
 - `/password <pass>`: (DM Only) Enter your password securely.
+- `/send <command>`: (DM Only) Send a command starting with / to the MUD.
