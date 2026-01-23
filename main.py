@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import asyncio
 import os
@@ -196,8 +197,22 @@ class MudCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @app_commands.command(name="play", description="Start playing the MUD in DMs")
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_messages=False)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    async def play_cmd(self, interaction: discord.Interaction):
+        user = interaction.user
+        try:
+            dm_channel = user.dm_channel or await user.create_dm()
+            await dm_channel.send("🎮 **Starting MUD Connection...**")
+            await interaction.response.send_message("✅ Check your DMs! I've started the connection process.", ephemeral=True)
+            await self.bot.init_session(user, dm_channel)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I couldn't send you a DM! Please enable 'Allow direct messages from server members' in your privacy settings.", ephemeral=True)
+
     @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
     @commands.dm_only()
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_messages=True)
     async def disconnect_cmd(self, ctx: commands.Context):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -212,20 +227,20 @@ class MudCommands(commands.Cog):
 
     @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
     @commands.dm_only()
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_messages=True)
     async def return_cmd(self, ctx: commands.Context):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
             session = self.bot.sessions[user_id]
             session.writer.write(b"\n")
             await session.writer.drain()
-            # If it's an interaction, we should respond
-            if ctx.interaction:
-                await ctx.send("✅ *Sent.*", ephemeral=True)
+            await ctx.send("✅ *Newline sent.*", ephemeral=True)
         else:
             await ctx.send("❌ You are not currently connected.")
 
     @commands.hybrid_command(name="password", description="Enter your password securely")
     @commands.dm_only()
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_messages=True)
     async def password_cmd(self, ctx: commands.Context, *, password: str):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -235,8 +250,6 @@ class MudCommands(commands.Cog):
             if ctx.interaction:
                 await ctx.send("🔑 *Password sent securely.*", ephemeral=True)
             else:
-                # If they use prefix command _password in DM, it's still in history.
-                # We should warn them.
                 await ctx.send("⚠️ *Password sent, but prefix commands in DMs are visible in your history. Please use the Slash Command version or delete your message.*")
         else:
             await ctx.send("❌ You are not currently connected.")
@@ -355,8 +368,64 @@ class DiscordMudClient(commands.Bot):
             await writer.drain()
         except: pass
 
+    async def init_session(self, user, channel):
+        user_id = user.id
+        display_name = str(user)
+
+        if user_id in self.sessions or user_id in self.connecting:
+            return
+
+        self.connecting.add(user_id)
+        self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT} (TLS: {MUD_TLS})...")
+        await channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `_help` for available commands)")
+
+        try:
+            reader, writer = None, None
+            if MUD_TLS:
+                ssl_context = ssl.create_default_context()
+                try:
+                    reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT, ssl=ssl_context)
+                except (ssl.SSLError, ConnectionRefusedError) as e:
+                    if isinstance(e, ssl.SSLError):
+                        self.log_event(user_id, display_name, f"TLS Verification failed: {str(e)}. Retrying leniently...")
+                        await channel.send("⚠️ *SSL verification failed. Continuing with unverified TLS.*")
+                        ssl_context = ssl.create_default_context()
+                        ssl_context.check_hostname = False
+                        ssl_context.verify_mode = ssl.CERT_NONE
+                        reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT, ssl=ssl_context)
+                    else:
+                        raise e
+            else:
+                reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT)
+
+            sock = writer.get_extra_info('socket')
+            if sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+            session = MudSession(self, user_id, reader, writer, channel, display_name)
+            self.sessions[user_id] = session
+            is_encrypted = writer.get_extra_info('ssl_object') is not None
+            self.log_event(user_id, display_name, f"Successfully connected to MUD (Encrypted: {is_encrypted}).")
+
+            await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
+            await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)
+            await self.send_naws(session.writer)
+
+            asyncio.create_task(self.mud_listener(user_id, channel, display_name))
+            self.connecting.discard(user_id)
+        except ConnectionRefusedError:
+            self.connecting.discard(user_id)
+            await channel.send("❌ Connection refused: The MUD server is likely down.")
+        except (socket.timeout, asyncio.TimeoutError):
+            self.connecting.discard(user_id)
+            await channel.send("❌ Connection timed out.")
+        except Exception as e:
+            self.connecting.discard(user_id)
+            self.log_event(user_id, display_name, f"Connection failed: {str(e)}")
+            await channel.send(f"❌ Could not connect: {type(e).__name__}")
+
     async def on_message(self, message):
-        if message.author.bot or message.guild or self.is_shutting_down: return
+        if message.author.bot or self.is_shutting_down: return
         user_id = message.author.id
         display_name = str(message.author)
 
@@ -364,6 +433,9 @@ class DiscordMudClient(commands.Bot):
         if ctx.valid:
             await self.invoke(ctx)
             return
+
+        # If not a command, it must be in DMs to be MUD input
+        if message.guild: return
 
         if len(message.content) > MAX_INPUT_LENGTH:
             await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
@@ -394,56 +466,8 @@ class DiscordMudClient(commands.Bot):
                 self.sessions.pop(user_id, None)
             return
 
-        if user_id in self.connecting: return
-        self.connecting.add(user_id)
-        self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT} (TLS: {MUD_TLS})...")
-        await message.channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `_help` for available commands)")
-
-        try:
-            reader, writer = None, None
-            if MUD_TLS:
-                ssl_context = ssl.create_default_context()
-                try:
-                    reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT, ssl=ssl_context)
-                except (ssl.SSLError, ConnectionRefusedError) as e:
-                    if isinstance(e, ssl.SSLError):
-                        self.log_event(user_id, display_name, f"TLS Verification failed: {str(e)}. Retrying leniently...")
-                        await message.channel.send("⚠️ *SSL verification failed. Continuing with unverified TLS.*")
-                        ssl_context = ssl.create_default_context()
-                        ssl_context.check_hostname = False
-                        ssl_context.verify_mode = ssl.CERT_NONE
-                        reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT, ssl=ssl_context)
-                    else:
-                        raise e
-            else:
-                reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT)
-
-            sock = writer.get_extra_info('socket')
-            if sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-
-            session = MudSession(self, user_id, reader, writer, message.channel, display_name)
-            self.sessions[user_id] = session
-            is_encrypted = writer.get_extra_info('ssl_object') is not None
-            self.log_event(user_id, display_name, f"Successfully connected to MUD (Encrypted: {is_encrypted}).")
-
-            await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
-            await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)
-            await self.send_naws(session.writer)
-
-            asyncio.create_task(self.mud_listener(user_id, message.channel, display_name))
-            self.connecting.discard(user_id)
-        except ConnectionRefusedError:
-            self.connecting.discard(user_id)
-            await message.channel.send("❌ Connection refused: The MUD server is likely down.")
-        except (socket.timeout, asyncio.TimeoutError):
-            self.connecting.discard(user_id)
-            await message.channel.send("❌ Connection timed out.")
-        except Exception as e:
-            self.connecting.discard(user_id)
-            self.log_event(user_id, display_name, f"Connection failed: {str(e)}")
-            await message.channel.send(f"❌ Could not connect: {type(e).__name__}")
-            return
+        # Start a new session if they DM us and don't have one
+        await self.init_session(message.author, message.channel)
 
 if __name__ == "__main__":
     intents = discord.Intents.default()
