@@ -17,12 +17,11 @@ class Telnet:
     NOP = 241
 
 class AnsiLayer:
-    """Handles ANSI escape sequences and UTF-8 decoding."""
+    """Handles ANSI escape sequences."""
     def __init__(self):
         self.state = "TEXT"
-        self.decoder = codecs.getincrementaldecoder('utf-8')(errors='ignore')
         self.current_ansi = bytearray()
-        self.output = ""
+        self.output = [] # List of [type, bytearray]
 
     def feed_byte(self, byte):
         if self.state == "TEXT":
@@ -30,29 +29,49 @@ class AnsiLayer:
                 self.state = "ESC"
                 self.current_ansi = bytearray([27])
             else:
-                self.output += self.decoder.decode(bytes([byte]))
+                if not self.output or self.output[-1][0] != "TEXT":
+                    self.output.append(["TEXT", bytearray([byte])])
+                else:
+                    self.output[-1][1].append(byte)
         elif self.state == "ESC":
             self.current_ansi.append(byte)
             if byte == ord('['):
                 self.state = "CSI"
             else:
-                # Not a CSI, just output what we have and reset
-                self.output += self.decoder.decode(self.current_ansi)
+                # Not a CSI, just output what we have as text and reset
+                if not self.output or self.output[-1][0] != "TEXT":
+                    self.output.append(["TEXT", self.current_ansi])
+                else:
+                    self.output[-1][1].extend(self.current_ansi)
                 self.state = "TEXT"
         elif self.state == "CSI":
             self.current_ansi.append(byte)
             # Standard ANSI CSI sequence ends with a byte in 0x40-0x7E range
             if 0x40 <= byte <= 0x7E:
-                self.output += self.decoder.decode(self.current_ansi)
+                self.output.append(["ANSI", self.current_ansi])
                 self.state = "TEXT"
             elif len(self.current_ansi) > 32: # Safety limit
-                self.output += self.decoder.decode(self.current_ansi)
+                self.output.append(["TEXT", self.current_ansi])
                 self.state = "TEXT"
 
     def get_output(self):
         out = self.output
-        self.output = ""
+        self.output = []
         return out
+
+SUPPORTED_CHARSETS = [
+    ('UTF-8', 'utf-8'),
+    ('ISO-8859-2', 'iso8859_2'),
+    ('CP1250', 'cp1250'),
+    ('KOI8-R', 'koi8_r'),
+    ('KOI8-U', 'koi8_u'),
+    ('ISO-8859-5', 'iso8859_5'),
+    ('CP1251', 'cp1251'),
+    ('ISO-8859-1', 'iso8859_1'),
+    ('CP1252', 'cp1252'),
+    ('US-ASCII', 'ascii'),
+    ('CP437', 'cp437'),
+]
 
 class TelnetProtocol:
     """Handles Telnet protocol state machine and outgoing packet construction."""
@@ -67,15 +86,34 @@ class TelnetProtocol:
         self.sb_data = bytearray()
         self.iac_cmd = None
         self.ansi = AnsiLayer()
+        self.encoding = 'utf-8'
+        self.decoder = codecs.getincrementaldecoder(self.encoding)(errors='ignore')
         self.compressing = False
         self.decompressor = None
         self.gmcp = GmcpHandler(self)
+
+    def set_encoding(self, encoding):
+        try:
+            codecs.lookup(encoding)
+            self.encoding = encoding
+            self.decoder = codecs.getincrementaldecoder(encoding)(errors='ignore')
+            return True
+        except LookupError:
+            return False
 
     def feed(self, data: bytes):
         if data and self.session:
             self.session.notify_activity()
         self._feed_internal(data)
-        return self.ansi.get_output()
+
+        chunks = self.ansi.get_output()
+        result = ""
+        for type, content in chunks:
+            if type == "TEXT":
+                result += self.decoder.decode(content)
+            else: # ANSI
+                result += content.decode('ascii', errors='ignore')
+        return result
 
     def _feed_internal(self, data: bytes):
         if self.compressing:
@@ -182,14 +220,33 @@ class TelnetProtocol:
             asyncio.create_task(self.send_subnegotiation(Telnet.TTYPE, packet))
         elif opt == Telnet.CHARSET and len(data) > 0 and data[0] == Telnet.REQUEST:
             try:
-                charsets = data[1:].decode('ascii', errors='ignore')
-                if 'UTF-8' in charsets.upper():
-                    packet = bytes([Telnet.ACCEPTED]) + "UTF-8".encode('ascii')
-                    asyncio.create_task(self.send_subnegotiation(Telnet.CHARSET, packet))
+                # RFC 2066: The first byte after REQUEST is the separator
+                separator_byte = data[1:2]
+                if not separator_byte:
+                    return
+                separator = separator_byte.decode('ascii')
+                charsets_raw = data[2:].decode('ascii', errors='ignore')
+                requested_charsets = [c.strip().upper() for c in charsets_raw.split(separator)]
+
+                match = None
+                for name, codec in SUPPORTED_CHARSETS:
+                    if name in requested_charsets:
+                        match = (name, codec)
+                        break
+
+                if match:
+                    name, codec = match
+                    if self.set_encoding(codec):
+                        packet = bytes([Telnet.ACCEPTED]) + name.encode('ascii')
+                        asyncio.create_task(self.send_subnegotiation(Telnet.CHARSET, packet))
+                    else:
+                        packet = bytes([Telnet.REJECTED])
+                        asyncio.create_task(self.send_subnegotiation(Telnet.CHARSET, packet))
                 else:
                     packet = bytes([Telnet.REJECTED])
                     asyncio.create_task(self.send_subnegotiation(Telnet.CHARSET, packet))
-            except: pass
+            except Exception:
+                pass
 
     def escape_iac(self, data: bytes) -> bytes:
         return data.replace(b'\xff', b'\xff\xff')
@@ -218,7 +275,7 @@ class TelnetProtocol:
         await self.safe_send(packet)
 
     async def send_text(self, text: str):
-        data = text.encode('utf-8')
+        data = text.encode(self.encoding, errors='ignore')
         packet = self.escape_iac(data)
         await self.safe_send(packet)
 
