@@ -1,10 +1,10 @@
 import discord
+from discord.ext import commands
 import asyncio
 import os
 import socket
 import signal
 import ssl
-import re
 import codecs
 from datetime import datetime
 
@@ -155,18 +155,28 @@ class MudSession:
                     self.msg_queue.get_nowait()
 
                 while self.buffer and not self.client.is_shutting_down:
-                    chunk, remainder = self.client.split_buffer(self.buffer)
-                    if chunk.strip():
-                        try:
-                            await self.channel.send(f"```ansi\n{chunk}\n```")
-                            await asyncio.sleep(0.6)
-                        except discord.HTTPException as e:
-                            if e.status == 429:
-                                await asyncio.sleep(5)
-                            else: break
-                        except Exception: break
-                    self.buffer = remainder
-                    if not remainder: break
+                    # Capture current buffer to work with a stable snapshot
+                    current_snapshot = self.buffer
+                    chunk, remainder = self.client.split_buffer(current_snapshot)
+
+                    if not chunk.strip():
+                        # If the chunk is empty or just whitespace, discard it from the main buffer
+                        self.buffer = self.buffer[len(chunk):].lstrip('\n')
+                        if not self.buffer: break
+                        continue
+
+                    try:
+                        await self.channel.send(f"```ansi\n{chunk}\n```")
+                        # Success! Remove only the processed chunk from the main buffer
+                        self.buffer = self.buffer[len(chunk):].lstrip('\n')
+                        await asyncio.sleep(0.6)
+                    except discord.HTTPException as e:
+                        if e.status == 429:
+                            await asyncio.sleep(5)
+                            # Do not discard chunk on rate limit, try again
+                            continue
+                        else: break
+                    except Exception: break
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -175,9 +185,9 @@ class MudSession:
     def stop(self):
         self.worker_task.cancel()
 
-class DiscordMudClient(discord.Client):
+class DiscordMudClient(commands.Bot):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(command_prefix='/', *args, **kwargs)
         self.sessions = {}  # {user_id: MudSession}
         self.connecting = set()
         self.echo_off = set()
@@ -268,10 +278,38 @@ class DiscordMudClient(discord.Client):
             self.log_event(user_id, username, "Session cleaned up and removed.")
 
 
+    @commands.command(name="disconnect")
+    async def disconnect_cmd(self, ctx):
+        user_id = ctx.author.id
+        if user_id in self.sessions:
+            session = self.sessions.pop(user_id, None)
+            session.stop()
+            session.writer.close()
+            try: await session.writer.wait_closed()
+            except: pass
+            await ctx.send("🔌 *Disconnected.*")
+        else:
+            await ctx.send("❌ You are not currently connected.")
+
+    @commands.command(name="return")
+    async def return_cmd(self, ctx):
+        user_id = ctx.author.id
+        if user_id in self.sessions:
+            session = self.sessions[user_id]
+            session.writer.write(b"\n")
+            await session.writer.drain()
+        else:
+            await ctx.send("❌ You are not currently connected.")
+
     async def on_message(self, message):
         if message.author.bot or message.guild or self.is_shutting_down: return
         user_id = message.author.id
         display_name = str(message.author)
+
+        ctx = await self.get_context(message)
+        if ctx.valid:
+            await self.invoke(ctx)
+            return
 
         if len(message.content) > MAX_INPUT_LENGTH:
             await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
@@ -308,7 +346,8 @@ class DiscordMudClient(discord.Client):
                 
                 session = MudSession(self, user_id, reader, writer, message.channel, display_name)
                 self.sessions[user_id] = session
-                self.log_event(user_id, display_name, "Successfully connected to MUD.")
+                is_encrypted = writer.get_extra_info('ssl_object') is not None
+                self.log_event(user_id, display_name, f"Successfully connected to MUD (Encrypted: {is_encrypted}).")
 
                 await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
                 await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)

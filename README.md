@@ -24,6 +24,7 @@ Create a .env file in the root directory and paste your token:
 DISCORD_TOKEN=YourBotTokenHere
 MUD_HOST=mume.org
 MUD_PORT=4242
+MUD_TLS=false
 ```
 
 ### 3. Install
