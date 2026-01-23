@@ -24,7 +24,8 @@ Create a .env file in the root directory and paste your token:
 DISCORD_TOKEN=YourBotTokenHere
 MUD_HOST=mume.org
 MUD_PORT=4242
-MUD_TLS=true
+MUD_SCHEME=telnets   # 'telnet', 'telnets', 'ws', 'wss'
+MUD_PATH=/           # Path for connections (mostly for websockets)
 ```
 
 ### 3. Install
@@ -37,7 +38,11 @@ MUD_TLS=true
 ## 🎮 Commands
 Available Slash Commands:
 
-- `/play`: (Guild Only) Start playing the MUD in DMs.
+- `/play`: Start playing the default MUD in DMs.
+- `/connect [url]`: (DM Only) Connect to a specific MUD.
+    - Example: `/connect telnet://mume.org:4242`
+    - Supported protocols: `telnet://`, `telnets://`, `ws://`, `wss://`.
+    - Defaults to `telnets://` if no protocol is provided.
 - `/disconnect`: (DM Only) End your current MUD session.
 - `/return`: (DM Only) Send a newline character to the MUD.
 - `/password <pass>`: (DM Only) Enter your password securely.

@@ -9,8 +9,8 @@ class MudCommands(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="play", description="Start playing the MUD in DMs")
-    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
     async def play_slash(self, interaction: discord.Interaction):
         user = interaction.user
         user_id = user.id
@@ -40,6 +40,29 @@ class MudCommands(commands.Cog):
             asyncio.create_task(self.bot.init_session(user, dm_channel))
         except discord.Forbidden:
             await interaction.response.send_message("❌ I couldn't send you a DM! Please enable 'Allow direct messages from server members' in your privacy settings.", ephemeral=True)
+
+    @app_commands.command(name="connect", description="Connect to a MUD in DMs")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.describe(url="The MUD URL (e.g. telnet://host:port, wss://host:port/path)")
+    async def connect_slash(self, interaction: discord.Interaction, url: str = None):
+        user = interaction.user
+        user_id = user.id
+
+        if self.bot.session_manager.get(user_id):
+            await interaction.response.send_message("❌ You are already connected! Disconnect first to change servers.", ephemeral=True)
+            return
+
+        if self.bot.session_manager.is_connecting(user_id):
+            await interaction.response.send_message("⏳ You are already connecting! Please wait a moment.", ephemeral=True)
+            return
+
+        try:
+            dm_channel = interaction.channel
+            await interaction.response.send_message("✅ Starting connection process...", ephemeral=True)
+            asyncio.create_task(self.bot.init_session(user, dm_channel, url=url))
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
     @app_commands.command(name="disconnect", description="Disconnect from the MUD")
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)

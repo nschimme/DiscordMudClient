@@ -9,7 +9,8 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - MUD_HOST=${MUD_HOST}
       - MUD_PORT=${MUD_PORT}
-      - MUD_TLS=${MUD_TLS}
+      - MUD_SCHEME=${MUD_SCHEME}
+      - MUD_PATH=${MUD_PATH}
     # This keeps the container running and logs accessible
     tty: true
     stdin_open: true
