@@ -1,31 +1,286 @@
 import discord
+from discord import app_commands
+from discord.ext import commands
 import asyncio
 import os
 import socket
 import signal
+import ssl
+import codecs
 from datetime import datetime
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv('DISCORD_TOKEN')
-MUD_HOST = os.getenv('MUD_HOST')
-MUD_PORT = os.getenv('MUD_PORT')
+MUD_HOST = os.getenv('MUD_HOST', 'mume.org')
+MUD_PORT = os.getenv('MUD_PORT', '4242')
+MUD_TLS = os.getenv('MUD_TLS', 'true').lower() == 'true'
 MAX_BUFFER_SIZE = 50000  # Prevent memory exhaustion
 MAX_INPUT_LENGTH = 500   # Prevent MUD buffer flooding
 
 class Telnet:
     IAC, DONT, DO, WONT, WILL = 255, 254, 253, 252, 251
     SB, SE = 250, 240
-    ECHO, TTYPE, NAWS = 1, 24, 31
-    IS, SEND = 0, 1
+    ECHO, TTYPE, NAWS, CHARSET = 1, 24, 31, 42
+    IS, SEND, REQUEST, ACCEPTED, REJECTED = 0, 1, 1, 2, 3
 
-class DiscordMudClient(discord.Client):
+class TelnetParser:
+    def __init__(self, client, writer, user_id, username):
+        self.client = client
+        self.writer = writer
+        self.user_id = user_id
+        self.username = username
+        self.state = "TEXT"
+        self.sb_option = None
+        self.sb_data = bytearray()
+        self.iac_cmd = None
+        self.decoder = codecs.getincrementaldecoder('utf-8')(errors='ignore')
+        self.current_ansi = bytearray()
+
+    def feed(self, data):
+        output_text = ""
+        for byte in data:
+            if self.state == "TEXT":
+                if byte == Telnet.IAC:
+                    self.state = "IAC"
+                elif byte == 27: # ESC
+                    self.state = "ESC"
+                    self.current_ansi = bytearray([27])
+                else:
+                    output_text += self.decoder.decode(bytes([byte]))
+            elif self.state == "ESC":
+                self.current_ansi.append(byte)
+                if byte == ord('['):
+                    self.state = "CSI"
+                else:
+                    output_text += self.decoder.decode(self.current_ansi)
+                    self.state = "TEXT"
+            elif self.state == "CSI":
+                self.current_ansi.append(byte)
+                if 0x40 <= byte <= 0x7E:
+                    output_text += self.decoder.decode(self.current_ansi)
+                    self.state = "TEXT"
+                elif len(self.current_ansi) > 32: # Safety limit
+                    output_text += self.decoder.decode(self.current_ansi)
+                    self.state = "TEXT"
+            elif self.state == "IAC":
+                if byte == Telnet.IAC:
+                    output_text += self.decoder.decode(bytes([255]))
+                    self.state = "TEXT"
+                elif byte in (Telnet.WILL, Telnet.WONT, Telnet.DO, Telnet.DONT):
+                    self.iac_cmd = byte
+                    self.state = "IAC_COMMAND"
+                elif byte == Telnet.SB:
+                    self.state = "SB"
+                    self.sb_data = bytearray()
+                else:
+                    self.state = "TEXT"
+            elif self.state == "IAC_COMMAND":
+                self.handle_command(self.iac_cmd, byte)
+                self.state = "TEXT"
+            elif self.state == "SB":
+                self.sb_option = byte
+                self.state = "SB_DATA"
+            elif self.state == "SB_DATA":
+                if byte == Telnet.IAC:
+                    self.state = "SB_IAC"
+                else:
+                    self.sb_data.append(byte)
+            elif self.state == "SB_IAC":
+                if byte == Telnet.SE:
+                    self.handle_subnegotiation(self.sb_option, self.sb_data)
+                    self.state = "TEXT"
+                elif byte == Telnet.IAC:
+                    self.sb_data.append(Telnet.IAC)
+                    self.state = "SB_DATA"
+                else:
+                    self.state = "TEXT"
+        return output_text
+
+    def handle_command(self, cmd, opt):
+        if opt == Telnet.ECHO:
+            asyncio.create_task(self.client.send_telnet_cmd(self.writer, Telnet.IAC, (Telnet.DO if cmd == Telnet.WILL else Telnet.DONT), Telnet.ECHO))
+            session = self.client.sessions.get(self.user_id)
+            if session:
+                if cmd == Telnet.WILL:
+                    if not session.echo_off:
+                        session.echo_off = True
+                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** Please use `/password <your_password>` to enter your password securely."))
+                else:
+                    session.echo_off = False
+        elif opt == Telnet.TTYPE and cmd == Telnet.DO:
+            asyncio.create_task(self.client.send_telnet_cmd(self.writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE))
+        elif opt == Telnet.NAWS and cmd == Telnet.DO:
+            asyncio.create_task(self.client.send_naws(self.writer))
+        elif opt == Telnet.CHARSET and cmd == Telnet.DO:
+            asyncio.create_task(self.client.send_telnet_cmd(self.writer, Telnet.IAC, Telnet.WILL, Telnet.CHARSET))
+        elif opt == Telnet.CHARSET and cmd == Telnet.WILL:
+            asyncio.create_task(self.client.send_telnet_cmd(self.writer, Telnet.IAC, Telnet.DO, Telnet.CHARSET))
+
+    def handle_subnegotiation(self, opt, data):
+        if opt == Telnet.TTYPE and len(data) > 0 and data[0] == Telnet.SEND:
+            identity = f"DiscordMudClient (UID:{self.user_id})"
+            packet = bytes([Telnet.IAC, Telnet.SB, Telnet.TTYPE, Telnet.IS]) + \
+                     identity.encode('ascii', errors='ignore') + \
+                     bytes([Telnet.IAC, Telnet.SE])
+            self.writer.write(packet)
+            asyncio.create_task(self.writer.drain())
+        elif opt == Telnet.CHARSET and len(data) > 0 and data[0] == Telnet.REQUEST:
+            try:
+                charsets = data[1:].decode('ascii', errors='ignore')
+                if 'UTF-8' in charsets.upper():
+                    packet = bytes([Telnet.IAC, Telnet.SB, Telnet.CHARSET, Telnet.ACCEPTED]) + \
+                             "UTF-8".encode('ascii') + \
+                             bytes([Telnet.IAC, Telnet.SE])
+                    self.writer.write(packet)
+                    asyncio.create_task(self.writer.drain())
+                else:
+                    packet = bytes([Telnet.IAC, Telnet.SB, Telnet.CHARSET, Telnet.REJECTED]) + \
+                             bytes([Telnet.IAC, Telnet.SE])
+                    self.writer.write(packet)
+                    asyncio.create_task(self.writer.drain())
+            except: pass
+
+class MudSession:
+    def __init__(self, client, user_id, reader, writer, channel, username):
+        self.client = client
+        self.user_id = user_id
+        self.reader = reader
+        self.writer = writer
+        self.channel = channel
+        self.username = username
+        self.parser = TelnetParser(client, writer, user_id, username)
+        self.echo_off = False
+        self.buffer = ""
+        self.msg_queue = asyncio.Queue()
+        self.worker_task = asyncio.create_task(self.worker())
+
+    async def worker(self):
+        try:
+            while True:
+                await self.msg_queue.get()
+                await asyncio.sleep(0.03)
+                while not self.msg_queue.empty():
+                    self.msg_queue.get_nowait()
+
+                while self.buffer and not self.client.is_shutting_down:
+                    current_snapshot = self.buffer
+                    chunk, remainder = self.client.split_buffer(current_snapshot)
+
+                    if not chunk.strip():
+                        self.buffer = self.buffer[len(chunk):].lstrip('\n')
+                        if not self.buffer: break
+                        continue
+
+                    try:
+                        await self.channel.send(f"```ansi\n{chunk}\n```")
+                        self.buffer = self.buffer[len(chunk):].lstrip('\n')
+                        await asyncio.sleep(0.6)
+                    except discord.HTTPException as e:
+                        if e.status == 429:
+                            await asyncio.sleep(5)
+                            continue
+                        else: break
+                    except Exception: break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.client.log_event(self.user_id, self.username, f"Worker error: {e}")
+
+    def stop(self):
+        self.worker_task.cancel()
+
+class MudCommands(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="play", description="Start playing the MUD in DMs")
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    async def play_slash(self, interaction: discord.Interaction):
+        user = interaction.user
+        try:
+            dm_channel = user.dm_channel or await user.create_dm()
+            await dm_channel.send("🎮 **Starting MUD Connection...**")
+            await interaction.response.send_message("✅ Check your DMs! I've started the connection process.", ephemeral=True)
+            await self.bot.init_session(user, dm_channel)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I couldn't send you a DM! Please enable 'Allow direct messages from server members' in your privacy settings.", ephemeral=True)
+
+    @app_commands.command(name="disconnect", description="Disconnect from the MUD")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    async def disconnect_slash(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions.pop(user_id, None)
+            session.stop()
+            session.writer.close()
+            try: await session.writer.wait_closed()
+            except: pass
+            await interaction.response.send_message("🔌 *Disconnected.*")
+        else:
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+    @app_commands.command(name="return", description="Send a newline character to the MUD")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    async def return_slash(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions[user_id]
+            session.writer.write(b"\n")
+            await session.writer.drain()
+            await interaction.response.send_message("✅ *Newline sent.*", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+    @app_commands.command(name="password", description="Enter your password securely")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.describe(password="The password to send")
+    async def password_slash(self, interaction: discord.Interaction, password: str):
+        user_id = interaction.user.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions[user_id]
+            session.writer.write((password + "\n").encode('utf-8'))
+            await session.writer.drain()
+            await interaction.response.send_message("🔑 *Password sent securely.*", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+    @app_commands.command(name="send", description="Send a command starting with / to the MUD")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.describe(command="The command to send")
+    async def send_slash(self, interaction: discord.Interaction, command: str):
+        user_id = interaction.user.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions[user_id]
+            session.writer.write((command + "\n").encode('utf-8'))
+            await session.writer.drain()
+            # Respond with the command itself to provide a clean display
+            await interaction.response.send_message(f"`{command}`")
+        else:
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+class DiscordMudClient(commands.Bot):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.sessions = {}  # {user_id: (reader, writer, channel, username)}
-        self.buffers = {}
+        # Using an obscure prefix since we want to only use Slash Commands,
+        # but commands.Bot still requires one.
+        super().__init__(command_prefix='\x00', help_command=None, *args, **kwargs)
+        self.sessions = {}  # {user_id: MudSession}
         self.connecting = set()
-        self.echo_off = set()
         self.is_shutting_down = False
+
+    async def setup_hook(self):
+        await self.add_cog(MudCommands(self))
+        try:
+            # Sync commands globally. Slash commands can take time to propagate in guilds,
+            # but usually appear instantly in DMs.
+            synced = await self.tree.sync()
+            print(f"--- Synced {len(synced)} global slash commands ---")
+        except Exception as e:
+            print(f"--- Failed to sync slash commands: {e} ---")
 
     def log_event(self, user_id, username, message):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -33,6 +288,10 @@ class DiscordMudClient(discord.Client):
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Game(name="DM to Play"))
+        # Redundant sync to ensure everything is registered
+        try:
+            await self.tree.sync()
+        except: pass
         print(f'--- DiscordMudClient Online as {self.user} ---')
 
         loop = asyncio.get_running_loop()
@@ -44,7 +303,7 @@ class DiscordMudClient(discord.Client):
         self.is_shutting_down = True
         self.log_event("SYSTEM", "CORE", "Shutdown signal received. Closing all sessions...")
 
-        tasks = [self.notify_and_close(uid, s[1], s[2], s[3]) for uid, s in self.sessions.items()]
+        tasks = [self.notify_and_close(uid, s.writer, s.channel, s.username) for uid, s in self.sessions.items()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -54,144 +313,62 @@ class DiscordMudClient(discord.Client):
         try:
             self.log_event(user_id, username, "Closing session due to bot shutdown.")
             await channel.send("🛑 **Bot Shutdown:** Bridge closing. Your session has ended.")
+            if user_id in self.sessions:
+                self.sessions[user_id].stop()
             writer.close()
             await writer.wait_closed()
         except: pass
 
-    async def flush_buffer(self, user_id, username, channel):
-        buf = self.buffers.get(user_id, "")
-        if not buf.strip(): return
+    def split_buffer(self, buf):
+        limit = 1900
+        if len(buf) <= limit:
+            return buf, ""
 
-        while len(buf) > 0:
-            if self.is_shutting_down: break
+        split_at = buf.rfind('\n', 0, limit)
+        if split_at == -1 or split_at < 500:
+            split_at = limit
 
-            limit = 1900
-            split_at = buf.rfind('\n', 0, limit)
-            if split_at == -1 or split_at < 500:
-                split_at = limit if len(buf) > limit else len(buf)
-
-            chunk = buf[:split_at]
-            if chunk.strip():
-                try:
-                    await channel.send(f"```ansi\n{chunk}\n```")
-                    await asyncio.sleep(0.6)
-                except discord.HTTPException:
-                    await asyncio.sleep(2) 
+        last_esc = buf.rfind('\x1b', 0, split_at)
+        if last_esc != -1:
+            terminated = False
+            for j in range(last_esc + 1, min(split_at + 10, len(buf))):
+                if 0x40 <= ord(buf[j]) <= 0x7E:
+                    if j < split_at:
+                        terminated = True
                     break
+            if not terminated:
+                split_at = last_esc
 
-            buf = buf[split_at:].lstrip('\n')
-
-        self.buffers[user_id] = ""
+        return buf[:split_at], buf[split_at:].lstrip('\n')
 
     async def mud_listener(self, user_id, channel, username):
         if user_id not in self.sessions: return
-        reader, writer, _, _ = self.sessions[user_id]
+        session = self.sessions[user_id]
         try:
             while True:
-                data = await reader.read(8192)
+                data = await session.reader.read(8192)
                 if not data:
                     self.log_event(user_id, username, "Connection closed by remote MUD host.")
                     break
 
-                raw_text = self.parse_stream(user_id, data, writer, username)
-                current_buf = self.buffers.get(user_id, "")
-                self.buffers[user_id] = (current_buf + raw_text)[-MAX_BUFFER_SIZE:]
-
-                await asyncio.sleep(0.05)
-                await self.flush_buffer(user_id, username, channel)
+                raw_text = session.parser.feed(data)
+                if raw_text:
+                    session.buffer = (session.buffer + raw_text)[-MAX_BUFFER_SIZE:]
+                    await session.msg_queue.put(True)
+        except (ConnectionResetError, BrokenPipeError):
+            self.log_event(user_id, username, "Connection reset by peer.")
         except Exception as e:
             self.log_event(user_id, username, f"Listener Error: {str(e)}")
         finally:
             if not self.is_shutting_down:
-                try: await channel.send("⚠️ *Connection closed.*")
-                except: pass
-            self.sessions.pop(user_id, None)
-            self.log_event(user_id, username, "Session cleaned up and removed.")
-
-    def parse_stream(self, user_id, data, writer, username):
-        output = bytearray()
-        i = 0
-        while i < len(data):
-            byte = data[i]
-            if byte == Telnet.IAC:
                 try:
-                    cmd = data[i+1]
-                    if cmd in (Telnet.DO, Telnet.DONT, Telnet.WILL, Telnet.WONT):
-                        opt = data[i+2]
-                        if opt == Telnet.ECHO:
-                            asyncio.create_task(self.send_telnet_cmd(writer, Telnet.IAC, (Telnet.DO if cmd == Telnet.WILL else Telnet.DONT), Telnet.ECHO))
-                            if cmd == Telnet.WILL: self.echo_off.add(user_id)
-                            else: self.echo_off.discard(user_id)
-                        elif opt == Telnet.TTYPE and cmd == Telnet.DO:
-                            asyncio.create_task(self.send_telnet_cmd(writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE))
-                        elif opt == Telnet.NAWS and cmd == Telnet.DO:
-                            asyncio.create_task(self.send_naws(writer))
-                        i += 3
-                    elif cmd == Telnet.SB:
-                        end = data.find(bytes([Telnet.IAC, Telnet.SE]), i)
-                        if end != -1:
-                            sb_data = data[i+2:end]
-                            if sb_data[0] == Telnet.TTYPE and sb_data[1] == Telnet.SEND:
-                                identity = f"DiscordMudClient (UID:{user_id})"
-                                packet = bytes([Telnet.IAC, Telnet.SB, Telnet.TTYPE, Telnet.IS]) + \
-                                         identity.encode('ascii', errors='ignore') + \
-                                         bytes([Telnet.IAC, Telnet.SE])
-                                writer.write(packet)
-                                asyncio.create_task(writer.drain())
-                            i = end + 2
-                        else: i = len(data)
-                    else: i += 2
-                except: i += 1
-            else:
-                output.append(byte)
-                i += 1
-        return output.decode('utf-8', errors='ignore')
-
-    async def on_message(self, message):
-        if message.author.bot or message.guild or self.is_shutting_down: return
-        user_id = message.author.id
-        display_name = str(message.author)
-
-        if len(message.content) > MAX_INPUT_LENGTH:
-            await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
-            return
-
-        if user_id not in self.sessions:
-            if user_id in self.connecting: return
-            self.connecting.add(user_id)
-            self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT}...")
-
-            try:
-                reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT)
-                sock = writer.get_extra_info('socket')
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                
-                self.sessions[user_id] = (reader, writer, message.channel, display_name)
-                self.log_event(user_id, display_name, "Successfully connected to MUD.")
-
-                await self.send_telnet_cmd(writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
-                await self.send_telnet_cmd(writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)
-                await self.send_naws(writer)
-
-                asyncio.create_task(self.mud_listener(user_id, message.channel, display_name))
-                self.connecting.discard(user_id)
-            except Exception as e:
-                self.connecting.discard(user_id)
-                self.log_event(user_id, display_name, f"Connection failed: {str(e)}")
-                await message.channel.send("❌ Could not connect to MUD.")
-            return
-
-        sanitized_input = message.content.replace('\xff', '')
-        _, writer, _, _ = self.sessions[user_id]
-        try:
-            writer.write((sanitized_input + "\n").encode('utf-8'))
-            await writer.drain()
-            if user_id in self.echo_off:
-                try: await message.delete()
+                    if user_id in self.sessions:
+                        await channel.send("⚠️ *Connection closed.*")
                 except: pass
-        except Exception as e:
-            self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
-            self.sessions.pop(user_id, None)
+            session = self.sessions.pop(user_id, None)
+            if session:
+                session.stop()
+            self.log_event(user_id, username, "Session cleaned up and removed.")
 
     async def send_telnet_cmd(self, writer, *args):
         try:
@@ -208,10 +385,104 @@ class DiscordMudClient(discord.Client):
             await writer.drain()
         except: pass
 
+    async def init_session(self, user, channel):
+        user_id = user.id
+        display_name = str(user)
+
+        if user_id in self.sessions or user_id in self.connecting:
+            return
+
+        self.connecting.add(user_id)
+        self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT} (TLS: {MUD_TLS})...")
+        await channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `/` to see available Slash Commands)")
+
+        try:
+            reader, writer = None, None
+            if MUD_TLS:
+                ssl_context = ssl.create_default_context()
+                try:
+                    reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT, ssl=ssl_context)
+                except (ssl.SSLError, ConnectionRefusedError) as e:
+                    if isinstance(e, ssl.SSLError):
+                        self.log_event(user_id, display_name, f"TLS Verification failed: {str(e)}. Retrying leniently...")
+                        await channel.send("⚠️ *SSL verification failed. Continuing with unverified TLS.*")
+                        ssl_context = ssl.create_default_context()
+                        ssl_context.check_hostname = False
+                        ssl_context.verify_mode = ssl.CERT_NONE
+                        reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT, ssl=ssl_context)
+                    else:
+                        raise e
+            else:
+                reader, writer = await asyncio.open_connection(MUD_HOST, MUD_PORT)
+
+            sock = writer.get_extra_info('socket')
+            if sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+            session = MudSession(self, user_id, reader, writer, channel, display_name)
+            self.sessions[user_id] = session
+            is_encrypted = writer.get_extra_info('ssl_object') is not None
+            self.log_event(user_id, display_name, f"Successfully connected to MUD (Encrypted: {is_encrypted}).")
+
+            await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
+            await self.send_telnet_cmd(session.writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)
+            await self.send_naws(session.writer)
+
+            asyncio.create_task(self.mud_listener(user_id, channel, display_name))
+            self.connecting.discard(user_id)
+        except ConnectionRefusedError:
+            self.connecting.discard(user_id)
+            await channel.send("❌ Connection refused: The MUD server is likely down.")
+        except (socket.timeout, asyncio.TimeoutError):
+            self.connecting.discard(user_id)
+            await channel.send("❌ Connection timed out.")
+        except Exception as e:
+            self.connecting.discard(user_id)
+            self.log_event(user_id, display_name, f"Connection failed: {str(e)}")
+            await channel.send(f"❌ Could not connect: {type(e).__name__}")
+
+    async def on_message(self, message):
+        if message.author.bot or self.is_shutting_down: return
+        user_id = message.author.id
+        display_name = str(message.author)
+
+        # If not in DMs, ignore everything (Slash commands are interactions, not messages)
+        if message.guild: return
+
+        if len(message.content) > MAX_INPUT_LENGTH:
+            await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
+            return
+
+        if user_id in self.sessions:
+            session = self.sessions[user_id]
+            if session.echo_off:
+                # Password mode
+                await message.channel.send("⚠️ **Security Warning:** Please use the `/password` command to enter your password instead of typing it directly.")
+                sanitized_input = message.content.replace('\xff', '')
+                try:
+                    session.writer.write((sanitized_input + "\n").encode('utf-8'))
+                    await session.writer.drain()
+                except Exception as e:
+                    self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
+                    self.sessions.pop(user_id, None)
+                return
+
+            # Normal input
+            sanitized_input = message.content.replace('\xff', '')
+            try:
+                session.writer.write((sanitized_input + "\n").encode('utf-8'))
+                await session.writer.drain()
+            except Exception as e:
+                self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
+                self.sessions.pop(user_id, None)
+            return
+
+        # Start a new session if they DM us and don't have one
+        await self.init_session(message.author, message.channel)
+
 if __name__ == "__main__":
     intents = discord.Intents.default()
     intents.message_content = True
     intents.members = True
     client = DiscordMudClient(intents=intents)
     client.run(TOKEN)
-
