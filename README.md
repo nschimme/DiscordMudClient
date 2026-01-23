@@ -35,8 +35,9 @@ MUD_TLS=false
 ---
 
 ## 🎮 Commands
-Available commands when DMing the bot:
+Available Slash Commands:
 
-- `_help`: Show available commands.
-- `_disconnect`: End your current MUD session.
-- `_return`: Send a newline character to the MUD.
+- `/play`: (Guild Only) Start playing the MUD in DMs.
+- `/disconnect`: (DM Only) End your current MUD session.
+- `/return`: (DM Only) Send a newline character to the MUD.
+- `/password <pass>`: (DM Only) Enter your password securely.

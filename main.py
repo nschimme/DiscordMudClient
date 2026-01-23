@@ -104,7 +104,7 @@ class TelnetParser:
                 if cmd == Telnet.WILL:
                     if not session.echo_off:
                         session.echo_off = True
-                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** The MUD has disabled echo. Please use `/password <your_password>` (Slash Command) for security, as bots cannot delete your messages in DMs."))
+                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** The MUD has disabled echo. Please use `/password <your_password>` for security, as bots cannot delete your messages in DMs."))
                 else:
                     session.echo_off = False
         elif opt == Telnet.TTYPE and cmd == Telnet.DO:
@@ -163,25 +163,21 @@ class MudSession:
                     self.msg_queue.get_nowait()
 
                 while self.buffer and not self.client.is_shutting_down:
-                    # Capture current buffer to work with a stable snapshot
                     current_snapshot = self.buffer
                     chunk, remainder = self.client.split_buffer(current_snapshot)
 
                     if not chunk.strip():
-                        # If the chunk is empty or just whitespace, discard it from the main buffer
                         self.buffer = self.buffer[len(chunk):].lstrip('\n')
                         if not self.buffer: break
                         continue
 
                     try:
                         await self.channel.send(f"```ansi\n{chunk}\n```")
-                        # Success! Remove only the processed chunk from the main buffer
                         self.buffer = self.buffer[len(chunk):].lstrip('\n')
                         await asyncio.sleep(0.6)
                     except discord.HTTPException as e:
                         if e.status == 429:
                             await asyncio.sleep(5)
-                            # Do not discard chunk on rate limit, try again
                             continue
                         else: break
                     except Exception: break
@@ -210,68 +206,53 @@ class MudCommands(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ I couldn't send you a DM! Please enable 'Allow direct messages from server members' in your privacy settings.", ephemeral=True)
 
-    @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
-    @commands.dm_only()
+    @app_commands.command(name="disconnect", description="Disconnect from the MUD")
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
-    async def disconnect_cmd(self, ctx: commands.Context):
-        user_id = ctx.author.id
+    async def disconnect_slash(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
         if user_id in self.bot.sessions:
             session = self.bot.sessions.pop(user_id, None)
             session.stop()
             session.writer.close()
             try: await session.writer.wait_closed()
             except: pass
-            await ctx.send("🔌 *Disconnected.*")
+            await interaction.response.send_message("🔌 *Disconnected.*")
         else:
-            await ctx.send("❌ You are not currently connected.")
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
-    @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
-    @commands.dm_only()
+    @app_commands.command(name="return", description="Send a newline character to the MUD")
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
-    async def return_cmd(self, ctx: commands.Context):
-        user_id = ctx.author.id
+    async def return_slash(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
         if user_id in self.bot.sessions:
             session = self.bot.sessions[user_id]
             session.writer.write(b"\n")
             await session.writer.drain()
-            await ctx.send("✅ *Newline sent.*", ephemeral=True)
+            await interaction.response.send_message("✅ *Newline sent.*", ephemeral=True)
         else:
-            await ctx.send("❌ You are not currently connected.")
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
-    @commands.hybrid_command(name="password", description="Enter your password securely")
-    @commands.dm_only()
+    @app_commands.command(name="password", description="Enter your password securely")
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.describe(password="The password to send")
-    async def password_cmd(self, ctx: commands.Context, *, password: str):
-        user_id = ctx.author.id
+    async def password_slash(self, interaction: discord.Interaction, password: str):
+        user_id = interaction.user.id
         if user_id in self.bot.sessions:
             session = self.bot.sessions[user_id]
             session.writer.write((password + "\n").encode('utf-8'))
             await session.writer.drain()
-            if ctx.interaction:
-                await ctx.send("🔑 *Password sent securely.*", ephemeral=True)
-            else:
-                await ctx.send("⚠️ *Password sent, but prefix commands in DMs are visible in your history. Please use the Slash Command version or delete your message.*")
+            await interaction.response.send_message("🔑 *Password sent securely.*", ephemeral=True)
         else:
-            await ctx.send("❌ You are not currently connected.")
-
-    @commands.command(name="help")
-    async def help_prefix(self, ctx):
-        help_text = (
-            "**Mud Client Commands:**\n"
-            "`_help`: Show this help message.\n"
-            "`_disconnect`: End your current MUD session.\n"
-            "`_return`: Send a newline character to the MUD.\n"
-            "`_password <pass>`: Enter your password (Warning: visible in history! Use Slash Command `/password` instead)."
-        )
-        await ctx.send(help_text)
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
 class DiscordMudClient(commands.Bot):
     def __init__(self, *args, **kwargs):
-        super().__init__(command_prefix='_', help_command=None, *args, **kwargs)
+        # Using an obscure prefix since we want to only use Slash Commands,
+        # but commands.Bot still requires one.
+        super().__init__(command_prefix='\x00', help_command=None, *args, **kwargs)
         self.sessions = {}  # {user_id: MudSession}
         self.connecting = set()
         self.is_shutting_down = False
@@ -279,6 +260,8 @@ class DiscordMudClient(commands.Bot):
     async def setup_hook(self):
         await self.add_cog(MudCommands(self))
         try:
+            # Sync commands globally. Slash commands can take time to propagate in guilds,
+            # but usually appear instantly in DMs.
             synced = await self.tree.sync()
             print(f"--- Synced {len(synced)} global slash commands ---")
         except Exception as e:
@@ -290,7 +273,7 @@ class DiscordMudClient(commands.Bot):
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Game(name="DM to Play"))
-        # Final sync attempt in on_ready to ensure all commands are registered
+        # Redundant sync to ensure everything is registered
         try:
             await self.tree.sync()
         except: pass
@@ -396,7 +379,7 @@ class DiscordMudClient(commands.Bot):
 
         self.connecting.add(user_id)
         self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT} (TLS: {MUD_TLS})...")
-        await channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `_help` for available commands)")
+        await channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `/` to see available Slash Commands)")
 
         try:
             reader, writer = None, None
@@ -448,12 +431,7 @@ class DiscordMudClient(commands.Bot):
         user_id = message.author.id
         display_name = str(message.author)
 
-        ctx = await self.get_context(message)
-        if ctx.valid:
-            await self.invoke(ctx)
-            return
-
-        # If not a command, it must be in DMs to be MUD input
+        # If not in DMs, ignore everything (Slash commands are interactions, not messages)
         if message.guild: return
 
         if len(message.content) > MAX_INPUT_LENGTH:
@@ -463,9 +441,8 @@ class DiscordMudClient(commands.Bot):
         if user_id in self.sessions:
             session = self.sessions[user_id]
             if session.echo_off:
-                # User is typing a password normally. Warn them.
-                await message.channel.send("⚠️ **SECURITY WARNING:** You are typing a password while Echo is OFF. **Bots cannot delete user messages in DMs.** Please delete your previous message immediately and use `/password <your_password>` (Slash Command) instead.")
-                # We still send it to the MUD though, as they probably want to log in.
+                # Password mode
+                await message.channel.send("⚠️ **SECURITY WARNING:** You are typing a password while Echo is OFF. **Bots cannot delete user messages in DMs.** Please delete your previous message immediately and use the `/password` Slash Command instead.")
                 sanitized_input = message.content.replace('\xff', '')
                 try:
                     session.writer.write((sanitized_input + "\n").encode('utf-8'))
