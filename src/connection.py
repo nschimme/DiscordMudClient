@@ -74,6 +74,7 @@ async def connect_mud(protocol, host, port, path='/', on_warning=None):
         sock = writer.get_extra_info('socket')
         if sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     elif protocol in ('ws', 'wss'):
         use_ssl = (protocol == 'wss')
