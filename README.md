@@ -31,3 +31,12 @@ MUD_TLS=false
 1. Run: `docker-compose up --build -d`
 2. Install your App into your Discord Channel
 3. DM the Discord Bot to play.
+
+---
+
+## 🎮 Commands
+Available commands when DMing the bot:
+
+- `_help`: Show available commands.
+- `_disconnect`: End your current MUD session.
+- `_return`: Send a newline character to the MUD.

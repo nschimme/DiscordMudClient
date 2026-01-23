@@ -219,7 +219,7 @@ class MudCommands(commands.Cog):
 
 class DiscordMudClient(commands.Bot):
     def __init__(self, *args, **kwargs):
-        super().__init__(command_prefix='/', *args, **kwargs)
+        super().__init__(command_prefix='_', *args, **kwargs)
         self.sessions = {}  # {user_id: MudSession}
         self.connecting = set()
         self.echo_off = set()
@@ -350,7 +350,7 @@ class DiscordMudClient(commands.Bot):
             if user_id in self.connecting: return
             self.connecting.add(user_id)
             self.log_event(user_id, display_name, f"Attempting to connect to {MUD_HOST}:{MUD_PORT} (TLS: {MUD_TLS})...")
-            await message.channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `/help` for available commands)")
+            await message.channel.send(f"⏳ *Connecting to {MUD_HOST}:{MUD_PORT}...*\n(Tip: Type `_help` for available commands)")
 
             try:
                 reader, writer = None, None
