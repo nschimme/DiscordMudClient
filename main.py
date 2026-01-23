@@ -104,7 +104,7 @@ class TelnetParser:
                 if cmd == Telnet.WILL:
                     if not session.echo_off:
                         session.echo_off = True
-                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** The MUD has disabled echo. Please use `_password <your_password>` (Slash Command) for security, as bots cannot delete your messages in DMs."))
+                        asyncio.create_task(session.channel.send("🔑 **Password Mode:** The MUD has disabled echo. Please use `/password <your_password>` (Slash Command) for security, as bots cannot delete your messages in DMs."))
                 else:
                     session.echo_off = False
         elif opt == Telnet.TTYPE and cmd == Telnet.DO:
@@ -200,7 +200,7 @@ class MudCommands(commands.Cog):
     @app_commands.command(name="play", description="Start playing the MUD in DMs")
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.allowed_installs(guilds=True, users=False)
-    async def play_cmd(self, interaction: discord.Interaction):
+    async def play_slash(self, interaction: discord.Interaction):
         user = interaction.user
         try:
             dm_channel = user.dm_channel or await user.create_dm()
@@ -213,6 +213,7 @@ class MudCommands(commands.Cog):
     @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
     @commands.dm_only()
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
     async def disconnect_cmd(self, ctx: commands.Context):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -228,6 +229,7 @@ class MudCommands(commands.Cog):
     @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
     @commands.dm_only()
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
     async def return_cmd(self, ctx: commands.Context):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -241,6 +243,8 @@ class MudCommands(commands.Cog):
     @commands.hybrid_command(name="password", description="Enter your password securely")
     @commands.dm_only()
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.describe(password="The password to send")
     async def password_cmd(self, ctx: commands.Context, *, password: str):
         user_id = ctx.author.id
         if user_id in self.bot.sessions:
@@ -254,9 +258,20 @@ class MudCommands(commands.Cog):
         else:
             await ctx.send("❌ You are not currently connected.")
 
+    @commands.command(name="help")
+    async def help_prefix(self, ctx):
+        help_text = (
+            "**Mud Client Commands:**\n"
+            "`_help`: Show this help message.\n"
+            "`_disconnect`: End your current MUD session.\n"
+            "`_return`: Send a newline character to the MUD.\n"
+            "`_password <pass>`: Enter your password (Warning: visible in history! Use Slash Command `/password` instead)."
+        )
+        await ctx.send(help_text)
+
 class DiscordMudClient(commands.Bot):
     def __init__(self, *args, **kwargs):
-        super().__init__(command_prefix='_', *args, **kwargs)
+        super().__init__(command_prefix='_', help_command=None, *args, **kwargs)
         self.sessions = {}  # {user_id: MudSession}
         self.connecting = set()
         self.is_shutting_down = False
@@ -275,6 +290,10 @@ class DiscordMudClient(commands.Bot):
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Game(name="DM to Play"))
+        # Final sync attempt in on_ready to ensure all commands are registered
+        try:
+            await self.tree.sync()
+        except: pass
         print(f'--- DiscordMudClient Online as {self.user} ---')
 
         loop = asyncio.get_running_loop()
@@ -445,7 +464,7 @@ class DiscordMudClient(commands.Bot):
             session = self.sessions[user_id]
             if session.echo_off:
                 # User is typing a password normally. Warn them.
-                await message.channel.send("⚠️ **SECURITY WARNING:** You are typing a password while Echo is OFF. **Bots cannot delete user messages in DMs.** Please delete your previous message immediately and use `_password <your_password>` (Slash Command) instead.")
+                await message.channel.send("⚠️ **SECURITY WARNING:** You are typing a password while Echo is OFF. **Bots cannot delete user messages in DMs.** Please delete your previous message immediately and use `/password <your_password>` (Slash Command) instead.")
                 # We still send it to the MUD though, as they probably want to log in.
                 sanitized_input = message.content.replace('\xff', '')
                 try:
