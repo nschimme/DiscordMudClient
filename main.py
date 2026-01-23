@@ -185,6 +185,38 @@ class MudSession:
     def stop(self):
         self.worker_task.cancel()
 
+class MudCommands(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
+    @commands.dm_only()
+    async def disconnect_cmd(self, ctx: commands.Context):
+        user_id = ctx.author.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions.pop(user_id, None)
+            session.stop()
+            session.writer.close()
+            try: await session.writer.wait_closed()
+            except: pass
+            await ctx.send("🔌 *Disconnected.*")
+        else:
+            await ctx.send("❌ You are not currently connected.")
+
+    @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
+    @commands.dm_only()
+    async def return_cmd(self, ctx: commands.Context):
+        user_id = ctx.author.id
+        if user_id in self.bot.sessions:
+            session = self.bot.sessions[user_id]
+            session.writer.write(b"\n")
+            await session.writer.drain()
+            # If it's an interaction, we should respond
+            if ctx.interaction:
+                await ctx.send("✅ *Sent.*", ephemeral=True)
+        else:
+            await ctx.send("❌ You are not currently connected.")
+
 class DiscordMudClient(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(command_prefix='/', *args, **kwargs)
@@ -193,18 +225,20 @@ class DiscordMudClient(commands.Bot):
         self.echo_off = set()
         self.is_shutting_down = False
 
+    async def setup_hook(self):
+        await self.add_cog(MudCommands(self))
+        try:
+            synced = await self.tree.sync()
+            print(f"--- Synced {len(synced)} global slash commands ---")
+        except Exception as e:
+            print(f"--- Failed to sync slash commands: {e} ---")
+
     def log_event(self, user_id, username, message):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] [User: {username} ({user_id})] {message}")
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Game(name="DM to Play"))
-        try:
-            synced = await self.tree.sync()
-            print(f"--- Synced {len(synced)} slash commands ---")
-        except Exception as e:
-            print(f"--- Failed to sync slash commands: {e} ---")
-
         print(f'--- DiscordMudClient Online as {self.user} ---')
 
         loop = asyncio.get_running_loop()
@@ -283,31 +317,20 @@ class DiscordMudClient(commands.Bot):
                 session.stop()
             self.log_event(user_id, username, "Session cleaned up and removed.")
 
+    async def send_telnet_cmd(self, writer, *args):
+        try:
+            writer.write(bytes(args))
+            await writer.drain()
+        except: pass
 
-    @commands.hybrid_command(name="disconnect", description="Disconnect from the MUD")
-    @commands.dm_only()
-    async def disconnect_cmd(self, ctx):
-        user_id = ctx.author.id
-        if user_id in self.sessions:
-            session = self.sessions.pop(user_id, None)
-            session.stop()
-            session.writer.close()
-            try: await session.writer.wait_closed()
-            except: pass
-            await ctx.send("🔌 *Disconnected.*")
-        else:
-            await ctx.send("❌ You are not currently connected.")
-
-    @commands.hybrid_command(name="return", description="Send a newline character to the MUD")
-    @commands.dm_only()
-    async def return_cmd(self, ctx):
-        user_id = ctx.author.id
-        if user_id in self.sessions:
-            session = self.sessions[user_id]
-            session.writer.write(b"\n")
-            await session.writer.drain()
-        else:
-            await ctx.send("❌ You are not currently connected.")
+    async def send_naws(self, writer, width=80, height=1000):
+        w_hi, w_lo = divmod(width, 256)
+        h_hi, h_lo = divmod(height, 256)
+        packet = bytes([Telnet.IAC, Telnet.SB, Telnet.NAWS, w_hi, w_lo, h_hi, h_lo, Telnet.IAC, Telnet.SE])
+        try:
+            writer.write(packet)
+            await writer.drain()
+        except: pass
 
     async def on_message(self, message):
         if message.author.bot or message.guild or self.is_shutting_down: return
@@ -408,4 +431,3 @@ if __name__ == "__main__":
     intents.members = True
     client = DiscordMudClient(intents=intents)
     client.run(TOKEN)
-
