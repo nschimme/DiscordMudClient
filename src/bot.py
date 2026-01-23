@@ -5,7 +5,7 @@ import socket
 import signal
 from datetime import datetime
 from .config import MUD_HOST, MUD_PORT, MUD_SCHEME, MUD_PATH, MAX_INPUT_LENGTH, MAX_BUFFER_SIZE, ANSI_TIMEOUT
-from .protocol import Telnet
+from .protocol import Telnet, DecompressionError
 from .session import MudSession, SessionManager
 from .commands import MudCommands
 from .utils import parse_mud_url
@@ -79,10 +79,17 @@ class DiscordMudClient(commands.Bot):
                     self.log_event(user_id, username, "Connection closed by remote MUD host.")
                     break
 
-                raw_text = session.protocol.feed(data)
-                if raw_text:
-                    session.buffer = (session.buffer + raw_text)[-MAX_BUFFER_SIZE:]
-                    await session.msg_queue.put(True)
+                try:
+                    raw_text = session.protocol.feed(data)
+                    if raw_text:
+                        session.buffer = (session.buffer + raw_text)[-MAX_BUFFER_SIZE:]
+                        await session.msg_queue.put(True)
+                except DecompressionError as e:
+                    self.log_event(user_id, username, f"Decompression error: {e}")
+                    try:
+                        await channel.send("❌ **Compression Error:** The compressed data stream from the MUD is corrupted. Closing session.")
+                    except: pass
+                    break
         except (ConnectionResetError, BrokenPipeError):
             self.log_event(user_id, username, "Connection reset by peer.")
         except asyncio.CancelledError:
