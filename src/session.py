@@ -1,7 +1,7 @@
 import asyncio
 import discord
 from .config import MAX_BUFFER_SIZE, SESSION_CLOSE_TIMEOUT
-from .protocol import TelnetParser
+from .protocol import TelnetProtocol
 
 class MudSession:
     def __init__(self, manager, user_id, reader, writer, channel, username):
@@ -12,7 +12,7 @@ class MudSession:
         self.writer = writer
         self.channel = channel
         self.username = username
-        self.parser = TelnetParser(self.client, writer, user_id, username)
+        self.protocol = TelnetProtocol(self.client, writer, user_id, username)
         self.echo_off = False
         self.buffer = ""
         self.msg_queue = asyncio.Queue()

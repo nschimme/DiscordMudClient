@@ -78,7 +78,7 @@ class DiscordMudClient(commands.Bot):
                     self.log_event(user_id, username, "Connection closed by remote MUD host.")
                     break
 
-                raw_text = session.parser.feed(data)
+                raw_text = session.protocol.feed(data)
                 if raw_text:
                     session.buffer = (session.buffer + raw_text)[-MAX_BUFFER_SIZE:]
                     await session.msg_queue.put(True)
@@ -94,25 +94,6 @@ class DiscordMudClient(commands.Bot):
                     if self.session_manager.get(user_id):
                         await channel.send("⚠️ *Connection closed.*")
                 except: pass
-            await self.session_manager.close_session(user_id)
-
-    async def send_telnet_cmd(self, user_id, username, writer, *args):
-        try:
-            writer.write(bytes(args))
-            await asyncio.wait_for(writer.drain(), timeout=ANSI_TIMEOUT)
-        except Exception as e:
-            self.log_event(user_id, username, f"Telnet cmd drain failed: {e}")
-            await self.session_manager.close_session(user_id)
-
-    async def send_naws(self, user_id, username, writer, width=80, height=1000):
-        w_hi, w_lo = divmod(width, 256)
-        h_hi, h_lo = divmod(height, 256)
-        packet = bytes([Telnet.IAC, Telnet.SB, Telnet.NAWS, w_hi, w_lo, h_hi, h_lo, Telnet.IAC, Telnet.SE])
-        try:
-            writer.write(packet)
-            await asyncio.wait_for(writer.drain(), timeout=ANSI_TIMEOUT)
-        except Exception as e:
-            self.log_event(user_id, username, f"NAWS drain failed: {e}")
             await self.session_manager.close_session(user_id)
 
     async def init_session(self, user, channel):
@@ -154,9 +135,9 @@ class DiscordMudClient(commands.Bot):
             is_encrypted = writer.get_extra_info('ssl_object') is not None
             self.log_event(user_id, display_name, f"Successfully connected to MUD (Encrypted: {is_encrypted}).")
 
-            await self.send_telnet_cmd(user_id, display_name, session.writer, Telnet.IAC, Telnet.WILL, Telnet.TTYPE)
-            await self.send_telnet_cmd(user_id, display_name, session.writer, Telnet.IAC, Telnet.WILL, Telnet.NAWS)
-            await self.send_naws(user_id, display_name, session.writer)
+            await session.protocol.send_command(Telnet.WILL, Telnet.TTYPE)
+            await session.protocol.send_command(Telnet.WILL, Telnet.NAWS)
+            await session.protocol.send_naws()
 
             session.listener_task = asyncio.create_task(self.mud_listener(user_id, channel, display_name))
             self.session_manager.stop_connecting(user_id)
@@ -188,23 +169,11 @@ class DiscordMudClient(commands.Bot):
             if session.echo_off:
                 # Password mode
                 await message.channel.send("⚠️ **Security Warning:** Please use the `/password` command to enter your password instead of typing it directly.")
-                sanitized_input = message.content.replace('\xff', '')
-                try:
-                    session.writer.write((sanitized_input + "\n").encode('utf-8'))
-                    await asyncio.wait_for(session.writer.drain(), timeout=ANSI_TIMEOUT)
-                except Exception as e:
-                    self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
-                    await self.session_manager.close_session(user_id)
-                return
 
-            # Normal input
-            sanitized_input = message.content.replace('\xff', '')
             try:
-                session.writer.write((sanitized_input + "\n").encode('utf-8'))
-                await asyncio.wait_for(session.writer.drain(), timeout=ANSI_TIMEOUT)
-            except Exception as e:
-                self.log_event(user_id, display_name, f"Write error (disconnecting): {str(e)}")
-                await self.session_manager.close_session(user_id)
+                await session.protocol.send_text(message.content + "\n")
+            except:
+                pass # safe_send handles logging and closing
             return
 
         # Start a new session if they DM us and don't have one

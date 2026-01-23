@@ -51,12 +51,10 @@ class MudCommands(commands.Cog):
         session = self.bot.session_manager.get(user_id)
         if session:
             try:
-                session.writer.write(b"\n")
-                await asyncio.wait_for(session.writer.drain(), timeout=ANSI_TIMEOUT)
+                await session.protocol.send_text("\n")
                 await interaction.response.send_message("✅ *Newline sent.*", ephemeral=True)
-            except (asyncio.TimeoutError, Exception) as e:
+            except:
                 await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
-                asyncio.create_task(self.bot.close_session(user_id))
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
@@ -69,12 +67,10 @@ class MudCommands(commands.Cog):
         session = self.bot.session_manager.get(user_id)
         if session:
             try:
-                session.writer.write((password + "\n").encode('utf-8'))
-                await asyncio.wait_for(session.writer.drain(), timeout=ANSI_TIMEOUT)
+                await session.protocol.send_text(password + "\n")
                 await interaction.response.send_message("🔑 *Password sent securely.*", ephemeral=True)
-            except (asyncio.TimeoutError, Exception) as e:
+            except:
                 await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
-                asyncio.create_task(self.bot.close_session(user_id))
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
@@ -87,12 +83,10 @@ class MudCommands(commands.Cog):
         session = self.bot.session_manager.get(user_id)
         if session:
             try:
-                session.writer.write((command + "\n").encode('utf-8'))
-                await asyncio.wait_for(session.writer.drain(), timeout=ANSI_TIMEOUT)
+                await session.protocol.send_text(command + "\n")
                 # Respond with the command itself to provide a clean display
                 await interaction.response.send_message(f"`{command}`")
-            except (asyncio.TimeoutError, Exception) as e:
+            except:
                 await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
-                asyncio.create_task(self.bot.close_session(user_id))
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
