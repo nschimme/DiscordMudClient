@@ -100,7 +100,7 @@ class MudCommands(commands.Cog):
         session = self.bot.session_manager.get(user_id)
         if session:
             try:
-                await session.protocol.send_text(password + "\n")
+                await session.protocol.send_text(password + "\n", transliterate=False)
                 await interaction.response.send_message("🔑 *Password sent securely.*", ephemeral=True)
             except:
                 await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)

@@ -1,8 +1,9 @@
 import asyncio
 import codecs
 import zlib
-from .config import MAX_BUFFER_SIZE, ANSI_TIMEOUT
+from .config import MAX_BUFFER_SIZE, ANSI_TIMEOUT, TRANSLITERATE
 from .gmcp import GmcpHandler
+from .utils import transliterate_emojis
 
 class DecompressionError(Exception):
     """Raised when MCCP decompression fails."""
@@ -279,7 +280,9 @@ class TelnetProtocol:
                  bytes([Telnet.IAC, Telnet.SE])
         await self.safe_send(packet)
 
-    async def send_text(self, text: str):
+    async def send_text(self, text: str, transliterate: bool = True):
+        if TRANSLITERATE and transliterate:
+            text = transliterate_emojis(text)
         data = text.encode(self.encoding, errors='ignore')
         packet = self.escape_iac(data)
         await self.safe_send(packet)

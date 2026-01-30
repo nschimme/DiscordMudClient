@@ -53,3 +53,66 @@ def parse_mud_url(url_str):
         elif protocol == 'wss': port = 443
 
     return protocol, host, port, path
+
+EMOJI_MAP = {
+    # Unicode Emojis
+    "🙂": ":)",
+    "😊": ":)",
+    "☺️": ":)",
+    "😉": ";)",
+    "😄": ":D",
+    "😀": ":D",
+    "😃": ":D",
+    "😆": "XD",
+    "😅": ":D",
+    "😮": ":O",
+    "😲": ":O",
+    "😱": ":O",
+    "🙁": ":(",
+    "☹️": ":(",
+    "😞": ":(",
+    "😟": ":(",
+    "😢": ":'(",
+    "😭": ":'(",
+    "😛": ":P",
+    "😜": ";P",
+    "😋": ":P",
+    "😝": "XP",
+    "😡": ":@",
+    "😠": ":@",
+    "😎": "8)",
+    "🙄": ":/",
+    "😕": ":/",
+    "🫤": ":/",
+    "🤔": ":?",
+    "😐": ":|",
+    "😑": ":|",
+    "😶": ":|",
+    "😍": "<3",
+    "❤️": "<3",
+    "💕": "<3",
+    "💖": "<3",
+    "💗": "<3",
+    "👍": "+1",
+    "👎": "-1"
+}
+
+def transliterate_emojis(text):
+    """
+    Transliterates common emojis and shortcodes into equivalent ASCII smileys.
+    Handles variation selectors and common Discord auto-conversions.
+    """
+    if not text:
+        return text
+
+    # Strip Variation Selector-16 (U+FE0F) which Discord often appends
+    text = text.replace("\ufe0f", "")
+
+    # Strip skin tone modifiers (U+1F3FB to U+1F3FF) to prevent dangling bytes
+    for i in range(0x1f3fb, 0x1f400):
+        text = text.replace(chr(i), "")
+
+    for target, replacement in EMOJI_MAP.items():
+        text = text.replace(target, replacement)
+
+    return text

@@ -8,6 +8,7 @@ MUD_HOST = os.getenv('MUD_HOST', 'mume.org')
 MUD_PORT = os.getenv('MUD_PORT', '4242')
 MUD_SCHEME = os.getenv('MUD_SCHEME', 'telnets').lower() # 'telnet', 'telnets', 'ws', 'wss'
 MUD_PATH = os.getenv('MUD_PATH', '/')
+TRANSLITERATE = os.getenv('TRANSLITERATE', 'True').lower() == 'true'
 
 # Constants
 MAX_BUFFER_SIZE = 50000  # Prevent memory exhaustion
