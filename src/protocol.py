@@ -19,6 +19,10 @@ class Telnet:
     NOP = 241
     BEL = 7
 
+# NAWS limits
+NAWS_MIN = 1
+NAWS_MAX = 65535
+
 class AnsiLayer:
     """Handles ANSI escape sequences."""
     def __init__(self):
@@ -289,7 +293,10 @@ class TelnetProtocol:
         packet = self.escape_iac(data)
         await self.safe_send(packet)
 
-    async def send_naws(self, width=80, height=100):
+    async def send_naws(self, width=80, height=24):
+        if not (NAWS_MIN <= width <= NAWS_MAX) or not (NAWS_MIN <= height <= NAWS_MAX):
+            raise ValueError(f"Terminal dimensions must be between {NAWS_MIN} and {NAWS_MAX}")
+
         w_hi, w_lo = divmod(width, 256)
         h_hi, h_lo = divmod(height, 256)
         data = bytes([w_hi, w_lo, h_hi, h_lo])
