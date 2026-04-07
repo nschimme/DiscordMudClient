@@ -1,6 +1,5 @@
 import re
 import colorsys
-import math
 
 # Discord Foreground Palette (RGB tuples)
 DISCORD_FG = {
@@ -81,9 +80,12 @@ def get_closest_ansi(rgb, palette_dict):
     min_dist = float('inf')
     r1, g1, b1 = rgb
     for code, (r2, g2, b2) in palette_dict.items():
-        dist = math.sqrt((r1 - r2)**2 + (g1 - g2)**2 + (b1 - b2)**2)
-        if dist < min_dist:
-            min_dist = dist
+        dr = r1 - r2
+        dg = g1 - g2
+        db = b1 - b2
+        dist_sq = dr * dr + dg * dg + db * db
+        if dist_sq < min_dist:
+            min_dist = dist_sq
             best_code = code
     return best_code
 
@@ -227,14 +229,16 @@ def parse_sgr_params(param_str):
                 params.append(0)
     return params
 
+# Regex for ANSI SGR: ESC [ parameters m
+ANSI_SGR_RE = re.compile(r'\x1b\[([\d;:]*)m')
+
 def transform_ansi_to_discord(text: str) -> str:
-    ansi_re = re.compile(r'\x1b\[([\d;:]*)m')
     result = []
     last_end = 0
     state = SGRState()
     prev_emitted_state = SGRState()
 
-    for match in ansi_re.finditer(text):
+    for match in ANSI_SGR_RE.finditer(text):
         result.append(text[last_end:match.start()])
         param_str = match.group(1)
         params = parse_sgr_params(param_str)
