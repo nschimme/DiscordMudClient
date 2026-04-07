@@ -176,14 +176,15 @@ class DiscordMudClient(commands.Bot):
 
     async def _send_to_session(self, session, content, message, is_edit):
         """Helper to send text and handle reactions."""
-        try:
-            await session.protocol.send_text(content + "\n")
-            if is_edit:
-                try:
-                    await message.add_reaction("✅")
-                except: pass
-        except:
-            pass # safe_send handles logging and closing
+        # Let send_text errors propagate so delivery problems are visible to the caller
+        await session.protocol.send_text(content + "\n")
+
+        if is_edit:
+            try:
+                await message.add_reaction("✅")
+            except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                # Non-critical: failing to react shouldn't break the main flow.
+                pass
 
     async def _handle_input(self, message, is_edit=False, before=None):
         if message.author.bot or self.is_shutting_down: return
@@ -213,7 +214,17 @@ class DiscordMudClient(commands.Bot):
             if current_length >= MAX_INPUT_LENGTH:
                 break
 
-            if attachment.size < 1024 * 50: # 50KB limit for safety
+            # Only process if likely a text file based on content type or extension
+            is_text = False
+            if attachment.content_type:
+                if attachment.content_type.startswith('text/') or attachment.content_type in ('application/json', 'application/xml'):
+                    is_text = True
+            elif attachment.filename:
+                ext = attachment.filename.lower().split('.')[-1]
+                if ext in ('txt', 'md', 'py', 'js', 'json', 'xml', 'csv', 'log'):
+                    is_text = True
+
+            if is_text and attachment.size < 1024 * 50: # 50KB limit for safety
                 try:
                     content = await attachment.read()
                     decoded = content.decode('utf-8', errors='replace') + "\n"
