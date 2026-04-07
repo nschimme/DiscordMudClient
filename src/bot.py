@@ -174,30 +174,110 @@ class DiscordMudClient(commands.Bot):
             else:
                 await channel.send(f"❌ Could not connect: {type(e).__name__}")
 
-    async def on_message(self, message):
-        if message.author.bot or self.is_shutting_down: return
-        user_id = message.author.id
-        display_name = str(message.author)
+    async def _send_to_session(self, session, content, message, is_edit):
+        """Helper to send text and handle reactions."""
+        # protocol.send_text calls safe_send which already handles logging
+        # and closing the session on network errors.
+        try:
+            await session.protocol.send_text(content + "\n")
+        except (UnicodeEncodeError, ValueError) as e:
+            # Specific processing errors (e.g. encoding issues) should be logged
+            # but don't necessarily require closing the entire session.
+            self.log_event(session.user_id, session.username, f"Processing error for input: {e}")
+            return
+        except Exception as e:
+            # Unexpected errors should be logged and re-raised to surface them
+            self.log_event(session.user_id, session.username, f"Unexpected error sending input: {e}")
+            raise
 
-        # If not in DMs, ignore everything (Slash commands are interactions, not messages)
+        if is_edit:
+            try:
+                await message.add_reaction("✅")
+            except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                # Non-critical: failing to react shouldn't break the main flow.
+                pass
+
+    def _is_text_attachment(self, attachment):
+        """Helper to determine if an attachment is likely a text file."""
+        if attachment.content_type:
+            if attachment.content_type.startswith('text/') or attachment.content_type in ('application/json', 'application/xml'):
+                return True
+        if attachment.filename:
+            ext = attachment.filename.lower().split('.')[-1]
+            if ext in ('txt', 'md', 'py', 'js', 'json', 'xml', 'csv', 'log'):
+                return True
+        return False
+
+    async def _handle_input(self, message, is_edit=False, before=None):
+        if message.author.bot or self.is_shutting_down: return
         if message.guild: return
 
+        user_id = message.author.id
+        display_name = str(message.author)
+        session = self.session_manager.get(user_id)
+
+        # Don't handle edits if in password mode
+        if is_edit and session and session.echo_off:
+            return
+
+        # If it's an edit, check if content actually changed before doing I/O
+        if is_edit and before:
+            before_attachment_ids = [a.id for a in before.attachments]
+            after_attachment_ids = [a.id for a in message.attachments]
+            if before.content == message.content and before_attachment_ids == after_attachment_ids:
+                return
+
+        # Combine content and attachments while enforcing MAX_INPUT_LENGTH.
+        # We check the message content first to short-circuit if it's already too long.
         if len(message.content) > MAX_INPUT_LENGTH:
             await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
             return
 
-        session = self.session_manager.get(user_id)
+        full_content = message.content
+
+        # Budget for attachments is whatever is left after message content
+        remaining_budget = MAX_INPUT_LENGTH - len(full_content)
+
+        if remaining_budget > 0:
+            for attachment in message.attachments:
+                if remaining_budget <= 0:
+                    break
+
+                if self._is_text_attachment(attachment) and attachment.size < 1024 * 50: # 50KB limit for safety
+                    try:
+                        content = await attachment.read()
+                        decoded = content.decode('utf-8', errors='replace')
+
+                        # Add a separator newline if we already have content
+                        if full_content and not full_content.endswith('\n'):
+                            decoded = "\n" + decoded
+
+                        if len(decoded) > remaining_budget:
+                            decoded = decoded[:remaining_budget]
+
+                        if decoded:
+                            full_content += decoded
+                            remaining_budget -= len(decoded)
+                    except Exception as e:
+                        self.log_event(user_id, display_name, f"Failed to read attachment: {e}")
+
+        if not full_content:
+            return
+
         if session:
-            if session.echo_off:
-                # Password mode
+            if session.echo_off and not is_edit:
+                # Password mode - only for new messages
                 await message.channel.send("⚠️ **Security Warning:** Please use the `/password` command to enter your password instead of typing it directly.")
 
-            try:
-                await session.protocol.send_text(message.content + "\n")
-            except:
-                pass # safe_send handles logging and closing
+            await self._send_to_session(session, full_content, message, is_edit)
             return
 
         # Start a new session if they DM us and don't have one
         if not self.session_manager.is_connecting(user_id):
             await self.init_session(message.author, message.channel)
+
+    async def on_message(self, message):
+        await self._handle_input(message)
+
+    async def on_message_edit(self, before, after):
+        await self._handle_input(after, is_edit=True, before=before)
