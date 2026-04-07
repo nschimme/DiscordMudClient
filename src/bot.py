@@ -275,10 +275,6 @@ class DiscordMudClient(commands.Bot):
         # Start a new session if they DM us and don't have one
         if not self.session_manager.is_connecting(user_id):
             await self.init_session(message.author, message.channel)
-            # Re-fetch session to send the initial message if it was just created
-            session = self.session_manager.get(user_id)
-            if session:
-                await self._send_to_session(session, full_content, message, is_edit)
 
     async def on_message(self, message):
         await self._handle_input(message)
