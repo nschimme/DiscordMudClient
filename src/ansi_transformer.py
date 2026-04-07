@@ -244,10 +244,10 @@ def transform_ansi_to_discord(text: str) -> str:
         seq = state.get_sequence(prev_state=prev_emitted_state, explicit_reset=explicit_reset)
         if seq:
             if seq == "\x1b[0m" and not prev_emitted_state.bold and not prev_emitted_state.underline and prev_emitted_state.fg is None and prev_emitted_state.bg is None and not explicit_reset:
-                 pass
+                pass
             else:
-                 result.append(seq)
-                 prev_emitted_state = state.copy()
+                result.append(seq)
+                prev_emitted_state = state.copy()
 
         last_end = match.end()
 
