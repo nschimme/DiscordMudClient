@@ -186,9 +186,9 @@ class DiscordMudClient(commands.Bot):
             self.log_event(session.user_id, session.username, f"Processing error for input: {e}")
             return
         except Exception as e:
-            # Unexpected errors should still be caught to prevent crashing the task
+            # Unexpected errors should be logged and re-raised to surface them
             self.log_event(session.user_id, session.username, f"Unexpected error sending input: {e}")
-            return
+            raise
 
         if is_edit:
             try:
@@ -227,50 +227,42 @@ class DiscordMudClient(commands.Bot):
             if before.content == message.content and before_attachment_ids == after_attachment_ids:
                 return
 
-        # Check for length violation before doing any I/O
+        # Combine content and attachments while enforcing MAX_INPUT_LENGTH.
+        # We check the message content first to short-circuit if it's already too long.
         if len(message.content) > MAX_INPUT_LENGTH:
             await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
             return
 
-        # Extract text from attachments if they are small and likely text,
-        # but enforce a global cap based on MAX_INPUT_LENGTH.
-        attachment_text = ""
-        current_length = len(message.content)
-
-        for attachment in message.attachments:
-            if current_length >= MAX_INPUT_LENGTH:
-                break
-
-            if self._is_text_attachment(attachment) and attachment.size < 1024 * 50: # 50KB limit for safety
-                try:
-                    content = await attachment.read()
-                    decoded = content.decode('utf-8', errors='replace') + "\n"
-
-                    remaining = MAX_INPUT_LENGTH - current_length
-                    if remaining <= 0:
-                        break
-
-                    if len(decoded) > remaining:
-                        decoded = decoded[:remaining]
-
-                    attachment_text += decoded
-                    current_length += len(decoded)
-                except Exception as e:
-                    self.log_event(user_id, display_name, f"Failed to read attachment: {e}")
-
-        # Combine content and attachments. We avoid .strip() to preserve leading spaces
-        # which can be significant in some MUDs (e.g. for formatting or specific commands).
         full_content = message.content
-        if attachment_text:
-            if full_content and not full_content.endswith('\n'):
-                full_content += "\n"
-            full_content += attachment_text
+
+        # Budget for attachments is whatever is left after message content
+        remaining_budget = MAX_INPUT_LENGTH - len(full_content)
+
+        if remaining_budget > 0:
+            for attachment in message.attachments:
+                if remaining_budget <= 0:
+                    break
+
+                if self._is_text_attachment(attachment) and attachment.size < 1024 * 50: # 50KB limit for safety
+                    try:
+                        content = await attachment.read()
+                        decoded = content.decode('utf-8', errors='replace')
+
+                        # Add a separator newline if we already have content
+                        if full_content and not full_content.endswith('\n'):
+                            decoded = "\n" + decoded
+
+                        if len(decoded) > remaining_budget:
+                            decoded = decoded[:remaining_budget]
+
+                        if decoded:
+                            full_content += decoded
+                            remaining_budget -= len(decoded)
+                    except Exception as e:
+                        self.log_event(user_id, display_name, f"Failed to read attachment: {e}")
 
         if not full_content:
             return
-
-        # No need for a second MAX_INPUT_LENGTH check here, as it's already managed by
-        # the initial check and the budget-aware attachment loop above.
 
         if session:
             if session.echo_off and not is_edit:
