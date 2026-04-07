@@ -4,6 +4,7 @@ import zlib
 from .config import MAX_BUFFER_SIZE, ANSI_TIMEOUT, TRANSLITERATE
 from .gmcp import GmcpHandler
 from .utils import transliterate_emojis
+from .daad_adapter import process_ansi
 
 class DecompressionError(Exception):
     """Raised when MCCP decompression fails."""
@@ -114,7 +115,8 @@ class TelnetProtocol:
             if type == "TEXT":
                 result += self.decoder.decode(content)
             else: # ANSI
-                result += content.decode('ascii', errors='ignore')
+                ansi_str = content.decode('ascii', errors='ignore')
+                result += process_ansi(ansi_str)
         return result
 
     def _feed_internal(self, data: bytes):

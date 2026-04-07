@@ -8,8 +8,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the bot code into the container
+# Copy the bot code and libraries into the container
 COPY src/ ./src/
+COPY libs/ ./libs/
 
 # Run the bot
 CMD ["python", "-m", "src"]
