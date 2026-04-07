@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import asyncio
 from .config import MAX_INPUT_LENGTH, ANSI_TIMEOUT
+from .protocol import NAWS_MIN, NAWS_MAX
 
 class MudCommands(commands.Cog):
     def __init__(self, bot):
@@ -91,22 +92,23 @@ class MudCommands(commands.Cog):
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
-    @app_commands.command(name="terminal", description="Set terminal dimensions (NAWS)")
+    @app_commands.command(name="terminal", description="Set terminal dimensions (width and height)")
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
-    @app_commands.describe(width="The terminal width (1-65535)", height="The terminal height (1-65535)")
+    @app_commands.describe(width=f"The terminal width ({NAWS_MIN}-{NAWS_MAX})", height=f"The terminal height ({NAWS_MIN}-{NAWS_MAX})")
     async def terminal_slash(self, interaction: discord.Interaction, width: int, height: int):
         user_id = interaction.user.id
         session = self.bot.session_manager.get(user_id)
         if session:
-            if not (1 <= width <= 65535) or not (1 <= height <= 65535):
-                await interaction.response.send_message("❌ Invalid dimensions. Use values between 1 and 65535.", ephemeral=True)
+            if not (NAWS_MIN <= width <= NAWS_MAX) or not (NAWS_MIN <= height <= NAWS_MAX):
+                await interaction.response.send_message(f"❌ Invalid dimensions. Use values between {NAWS_MIN} and {NAWS_MAX}.", ephemeral=True)
                 return
             try:
                 await session.protocol.send_naws(width, height)
                 await interaction.response.send_message(f"🖥️ *Terminal size set to {width}x{height}.*", ephemeral=True)
-            except:
-                await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
+            except Exception as e:
+                self.bot.log_event(user_id, session.username, f"Error sending NAWS: {e}")
+                await interaction.response.send_message("❌ Error while setting terminal size.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
