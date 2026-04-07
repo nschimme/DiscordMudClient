@@ -65,5 +65,6 @@ Available Slash Commands:
     - Defaults to `telnets://` if no protocol is provided.
 - `/disconnect`: (DM Only) End your current MUD session.
 - `/return`: (DM Only) Send a newline character to the MUD.
+- `/terminal <width> <height>`: (DM Only) Set terminal dimensions (NAWS). Defaults to 80x24.
 - `/password <pass>`: (DM Only) Enter your password securely.
 - `/send <command>`: (DM Only) Send a command starting with / to the MUD.

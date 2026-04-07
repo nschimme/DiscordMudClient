@@ -91,6 +91,25 @@ class MudCommands(commands.Cog):
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
 
+    @app_commands.command(name="terminal", description="Set terminal dimensions (NAWS)")
+    @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.describe(width="The terminal width (1-65535)", height="The terminal height (1-65535)")
+    async def terminal_slash(self, interaction: discord.Interaction, width: int, height: int):
+        user_id = interaction.user.id
+        session = self.bot.session_manager.get(user_id)
+        if session:
+            if not (1 <= width <= 65535) or not (1 <= height <= 65535):
+                await interaction.response.send_message("❌ Invalid dimensions. Use values between 1 and 65535.", ephemeral=True)
+                return
+            try:
+                await session.protocol.send_naws(width, height)
+                await interaction.response.send_message(f"🖥️ *Terminal size set to {width}x{height}.*", ephemeral=True)
+            except:
+                await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
     @app_commands.command(name="password", description="Enter your password securely")
     @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=True)
     @app_commands.allowed_installs(guilds=True, users=True)
