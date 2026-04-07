@@ -176,11 +176,18 @@ class DiscordMudClient(commands.Bot):
 
     async def _send_to_session(self, session, content, message, is_edit):
         """Helper to send text and handle reactions."""
+        # protocol.send_text calls safe_send which already handles logging
+        # and closing the session on network errors.
         try:
-            # Let send_text errors be caught to prevent bubbling up too far
             await session.protocol.send_text(content + "\n")
+        except (UnicodeEncodeError, ValueError) as e:
+            # Specific processing errors (e.g. encoding issues) should be logged
+            # but don't necessarily require closing the entire session.
+            self.log_event(session.user_id, session.username, f"Processing error for input: {e}")
+            return
         except Exception as e:
-            self.log_event(session.user_id, session.username, f"Failed to send input: {e}")
+            # Unexpected errors should still be caught to prevent crashing the task
+            self.log_event(session.user_id, session.username, f"Unexpected error sending input: {e}")
             return
 
         if is_edit:
@@ -208,6 +215,11 @@ class DiscordMudClient(commands.Bot):
             after_attachment_ids = [a.id for a in message.attachments]
             if before.content == message.content and before_attachment_ids == after_attachment_ids:
                 return
+
+        # Check for length violation before doing any I/O
+        if len(message.content) > MAX_INPUT_LENGTH:
+            await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
+            return
 
         # Extract text from attachments if they are small and likely text,
         # but enforce a global cap based on MAX_INPUT_LENGTH.
