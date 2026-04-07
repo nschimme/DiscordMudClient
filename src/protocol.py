@@ -287,7 +287,7 @@ class TelnetProtocol:
         packet = self.escape_iac(data)
         await self.safe_send(packet)
 
-    async def send_naws(self, width=80, height=1000):
+    async def send_naws(self, width=80, height=100):
         w_hi, w_lo = divmod(width, 256)
         h_hi, h_lo = divmod(height, 256)
         data = bytes([w_hi, w_lo, h_hi, h_lo])
