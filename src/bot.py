@@ -176,8 +176,12 @@ class DiscordMudClient(commands.Bot):
 
     async def _send_to_session(self, session, content, message, is_edit):
         """Helper to send text and handle reactions."""
-        # Let send_text errors propagate so delivery problems are visible to the caller
-        await session.protocol.send_text(content + "\n")
+        try:
+            # Let send_text errors be caught to prevent bubbling up too far
+            await session.protocol.send_text(content + "\n")
+        except Exception as e:
+            self.log_event(session.user_id, session.username, f"Failed to send input: {e}")
+            return
 
         if is_edit:
             try:
@@ -241,7 +245,14 @@ class DiscordMudClient(commands.Bot):
                 except Exception as e:
                     self.log_event(user_id, display_name, f"Failed to read attachment: {e}")
 
-        full_content = (message.content + "\n" + attachment_text).strip()
+        # Combine content and attachments. We avoid .strip() to preserve leading spaces
+        # which can be significant in some MUDs (e.g. for formatting or specific commands).
+        full_content = message.content
+        if attachment_text:
+            if full_content and not full_content.endswith('\n'):
+                full_content += "\n"
+            full_content += attachment_text
+
         if not full_content:
             return
 
