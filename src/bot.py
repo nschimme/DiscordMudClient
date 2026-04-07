@@ -174,26 +174,54 @@ class DiscordMudClient(commands.Bot):
             else:
                 await channel.send(f"❌ Could not connect: {type(e).__name__}")
 
-    async def on_message(self, message):
+    async def _handle_input(self, message, is_edit=False, before=None):
         if message.author.bot or self.is_shutting_down: return
-        user_id = message.author.id
-        display_name = str(message.author)
-
-        # If not in DMs, ignore everything (Slash commands are interactions, not messages)
         if message.guild: return
 
-        if len(message.content) > MAX_INPUT_LENGTH:
+        user_id = message.author.id
+        display_name = str(message.author)
+        session = self.session_manager.get(user_id)
+
+        # Don't handle edits if in password mode
+        if is_edit and session and session.echo_off:
+            return
+
+        # Extract text from attachments if they are small and likely text
+        attachment_text = ""
+        for attachment in message.attachments:
+            if attachment.size < 1024 * 50: # 50KB limit for safety
+                try:
+                    content = await attachment.read()
+                    attachment_text += content.decode('utf-8', errors='replace') + "\n"
+                except Exception as e:
+                    self.log_event(user_id, display_name, f"Failed to read attachment: {e}")
+
+        full_content = (message.content + "\n" + attachment_text).strip()
+        if not full_content:
+            return
+
+        # If it's an edit, check if content actually changed
+        if is_edit and before:
+            before_attachment_ids = [a.id for a in before.attachments]
+            after_attachment_ids = [a.id for a in message.attachments]
+            if before.content == message.content and before_attachment_ids == after_attachment_ids:
+                return
+
+        if len(full_content) > MAX_INPUT_LENGTH:
             await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
             return
 
-        session = self.session_manager.get(user_id)
         if session:
-            if session.echo_off:
-                # Password mode
+            if session.echo_off and not is_edit:
+                # Password mode - only for new messages
                 await message.channel.send("⚠️ **Security Warning:** Please use the `/password` command to enter your password instead of typing it directly.")
 
             try:
-                await session.protocol.send_text(message.content + "\n")
+                await session.protocol.send_text(full_content + "\n")
+                if is_edit:
+                    try:
+                        await message.add_reaction("✅")
+                    except: pass
             except:
                 pass # safe_send handles logging and closing
             return
@@ -201,3 +229,19 @@ class DiscordMudClient(commands.Bot):
         # Start a new session if they DM us and don't have one
         if not self.session_manager.is_connecting(user_id):
             await self.init_session(message.author, message.channel)
+            # Re-fetch session to send the initial message if it was just created
+            session = self.session_manager.get(user_id)
+            if session:
+                try:
+                    await session.protocol.send_text(full_content + "\n")
+                    if is_edit:
+                        try:
+                            await message.add_reaction("✅")
+                        except: pass
+                except: pass
+
+    async def on_message(self, message):
+        await self._handle_input(message)
+
+    async def on_message_edit(self, before, after):
+        await self._handle_input(after, is_edit=True, before=before)
