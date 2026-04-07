@@ -2,6 +2,7 @@ import sys
 import os
 import importlib.util
 import logging
+import io
 
 # Set up logging for DAAD adapter
 logger = logging.getLogger(__name__)
@@ -24,14 +25,24 @@ def _load_daad():
 
         module = importlib.util.module_from_spec(spec)
         # We don't set sys.modules until after success to avoid partial registration
+
+        # The script attempts to read from sys.stdin on import, which will block.
+        # We need to temporarily redirect stdin to prevent this.
+        original_stdin = sys.stdin
+        original_stdout = sys.stdout
+        sys.stdin = io.StringIO("") # Empty input
+        sys.stdout = io.StringIO("") # Capture any print calls
+
         try:
             spec.loader.exec_module(module)
             sys.modules["daad"] = module
         except Exception as e:
             logger.exception(f"Error executing DAAD adapter script: {e}")
-            # Ensure sys.modules is cleaned up if it was partially set (though we deferred it)
             sys.modules.pop("daad", None)
             return None
+        finally:
+            sys.stdin = original_stdin
+            sys.stdout = original_stdout
 
         logger.info("Successfully loaded DAAD adapter.")
         return module
