@@ -174,6 +174,17 @@ class DiscordMudClient(commands.Bot):
             else:
                 await channel.send(f"❌ Could not connect: {type(e).__name__}")
 
+    async def _send_to_session(self, session, content, message, is_edit):
+        """Helper to send text and handle reactions."""
+        try:
+            await session.protocol.send_text(content + "\n")
+            if is_edit:
+                try:
+                    await message.add_reaction("✅")
+                except: pass
+        except:
+            pass # safe_send handles logging and closing
+
     async def _handle_input(self, message, is_edit=False, before=None):
         if message.author.bot or self.is_shutting_down: return
         if message.guild: return
@@ -186,26 +197,42 @@ class DiscordMudClient(commands.Bot):
         if is_edit and session and session.echo_off:
             return
 
-        # Extract text from attachments if they are small and likely text
+        # If it's an edit, check if content actually changed before doing I/O
+        if is_edit and before:
+            before_attachment_ids = [a.id for a in before.attachments]
+            after_attachment_ids = [a.id for a in message.attachments]
+            if before.content == message.content and before_attachment_ids == after_attachment_ids:
+                return
+
+        # Extract text from attachments if they are small and likely text,
+        # but enforce a global cap based on MAX_INPUT_LENGTH.
         attachment_text = ""
+        current_length = len(message.content)
+
         for attachment in message.attachments:
+            if current_length >= MAX_INPUT_LENGTH:
+                break
+
             if attachment.size < 1024 * 50: # 50KB limit for safety
                 try:
                     content = await attachment.read()
-                    attachment_text += content.decode('utf-8', errors='replace') + "\n"
+                    decoded = content.decode('utf-8', errors='replace') + "\n"
+
+                    remaining = MAX_INPUT_LENGTH - current_length
+                    if remaining <= 0:
+                        break
+
+                    if len(decoded) > remaining:
+                        decoded = decoded[:remaining]
+
+                    attachment_text += decoded
+                    current_length += len(decoded)
                 except Exception as e:
                     self.log_event(user_id, display_name, f"Failed to read attachment: {e}")
 
         full_content = (message.content + "\n" + attachment_text).strip()
         if not full_content:
             return
-
-        # If it's an edit, check if content actually changed
-        if is_edit and before:
-            before_attachment_ids = [a.id for a in before.attachments]
-            after_attachment_ids = [a.id for a in message.attachments]
-            if before.content == message.content and before_attachment_ids == after_attachment_ids:
-                return
 
         if len(full_content) > MAX_INPUT_LENGTH:
             await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
@@ -216,14 +243,7 @@ class DiscordMudClient(commands.Bot):
                 # Password mode - only for new messages
                 await message.channel.send("⚠️ **Security Warning:** Please use the `/password` command to enter your password instead of typing it directly.")
 
-            try:
-                await session.protocol.send_text(full_content + "\n")
-                if is_edit:
-                    try:
-                        await message.add_reaction("✅")
-                    except: pass
-            except:
-                pass # safe_send handles logging and closing
+            await self._send_to_session(session, full_content, message, is_edit)
             return
 
         # Start a new session if they DM us and don't have one
@@ -232,13 +252,7 @@ class DiscordMudClient(commands.Bot):
             # Re-fetch session to send the initial message if it was just created
             session = self.session_manager.get(user_id)
             if session:
-                try:
-                    await session.protocol.send_text(full_content + "\n")
-                    if is_edit:
-                        try:
-                            await message.add_reaction("✅")
-                        except: pass
-                except: pass
+                await self._send_to_session(session, full_content, message, is_edit)
 
     async def on_message(self, message):
         await self._handle_input(message)
