@@ -197,6 +197,17 @@ class DiscordMudClient(commands.Bot):
                 # Non-critical: failing to react shouldn't break the main flow.
                 pass
 
+    def _is_text_attachment(self, attachment):
+        """Helper to determine if an attachment is likely a text file."""
+        if attachment.content_type:
+            if attachment.content_type.startswith('text/') or attachment.content_type in ('application/json', 'application/xml'):
+                return True
+        if attachment.filename:
+            ext = attachment.filename.lower().split('.')[-1]
+            if ext in ('txt', 'md', 'py', 'js', 'json', 'xml', 'csv', 'log'):
+                return True
+        return False
+
     async def _handle_input(self, message, is_edit=False, before=None):
         if message.author.bot or self.is_shutting_down: return
         if message.guild: return
@@ -230,17 +241,7 @@ class DiscordMudClient(commands.Bot):
             if current_length >= MAX_INPUT_LENGTH:
                 break
 
-            # Only process if likely a text file based on content type or extension
-            is_text = False
-            if attachment.content_type:
-                if attachment.content_type.startswith('text/') or attachment.content_type in ('application/json', 'application/xml'):
-                    is_text = True
-            elif attachment.filename:
-                ext = attachment.filename.lower().split('.')[-1]
-                if ext in ('txt', 'md', 'py', 'js', 'json', 'xml', 'csv', 'log'):
-                    is_text = True
-
-            if is_text and attachment.size < 1024 * 50: # 50KB limit for safety
+            if self._is_text_attachment(attachment) and attachment.size < 1024 * 50: # 50KB limit for safety
                 try:
                     content = await attachment.read()
                     decoded = content.decode('utf-8', errors='replace') + "\n"
@@ -268,9 +269,8 @@ class DiscordMudClient(commands.Bot):
         if not full_content:
             return
 
-        if len(full_content) > MAX_INPUT_LENGTH:
-            await message.channel.send(f"❌ Input too long (Max {MAX_INPUT_LENGTH} characters).")
-            return
+        # No need for a second MAX_INPUT_LENGTH check here, as it's already managed by
+        # the initial check and the budget-aware attachment loop above.
 
         if session:
             if session.echo_off and not is_edit:
