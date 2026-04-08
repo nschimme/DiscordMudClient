@@ -162,11 +162,18 @@ class SGRState:
                 self.bg = self.normalize_4bit_color(p - 100, is_bg=True)
             elif p == SGR_FG_EXTENDED or p == SGR_BG_EXTENDED:
                 is_bg = (p == SGR_BG_EXTENDED)
-                i, rgb = self._parse_extended_color(params, i)
-                if rgb:
-                    color = self.process_rgb(rgb, is_bg)
+                # Direct mapping for 8-bit color palette (0-7) to match 4-bit colors
+                if i + 2 < len(params) and params[i+1] == COLOR_MODE_8BIT and params[i+2] < 8:
+                    color = self.normalize_4bit_color(params[i+2], is_bg)
                     if is_bg: self.bg = color
                     else: self.fg = color
+                    i += 2
+                else:
+                    i, rgb = self._parse_extended_color(params, i)
+                    if rgb:
+                        color = self.process_rgb(rgb, is_bg)
+                        if is_bg: self.bg = color
+                        else: self.fg = color
             i += 1
         return resetted
 
@@ -205,8 +212,8 @@ class SGRState:
 
     def normalize_4bit_color(self, idx, is_bg):
         """Maps a standard 4-bit color index to a Discord-compatible ANSI code."""
-        rgb = ANSI_4BIT_RGB[idx % 8]
-        return self.process_rgb(rgb, is_bg)
+        # Use direct mapping for 4-bit colors to ensure consistent behavior across MUDs
+        return (idx % 8 + 40) if is_bg else (idx % 8 + 30)
 
     def process_rgb(self, rgb, is_bg):
         """Converts an RGB color to the closest Discord-compatible ANSI code."""
