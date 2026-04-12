@@ -2,6 +2,7 @@ import asyncio
 import discord
 from .config import MAX_BUFFER_SIZE, SESSION_CLOSE_TIMEOUT
 from .protocol import TelnetProtocol
+from .utils import extract_urls
 
 class MudSession:
     def __init__(self, manager, user_id, reader, writer, channel, username):
@@ -50,16 +51,54 @@ class MudSession:
 
                 while (self.buffer or self.bell_pending) and not self.client.is_shutting_down:
                     current_snapshot = self.buffer
-                    chunk, remainder = self.manager.split_buffer(current_snapshot)
+
+                    # Reserve space for mention and a few potential links
+                    mention = f" <@{self.user_id}> 🔔" if self.bell_pending else ""
+                    reserved_for_links = 400 # Reserve some space for links
+                    extra_len = len(mention) + reserved_for_links
+
+                    chunk, remainder = self.manager.split_buffer(current_snapshot, extra_len=extra_len)
 
                     if not chunk.strip() and not self.bell_pending:
                         self.buffer = self.buffer[len(chunk):].lstrip('\n')
                         if not self.buffer: break
                         continue
 
+                    # Extract URLs actually present in this chunk
+                    chunk_urls = extract_urls(chunk)
+                    final_links_text = ""
+                    overflow_links = []
+                    if chunk_urls:
+                        # Add links one by one as long as we stay under the limit
+                        for url in chunk_urls:
+                            new_link = f"\n🔗 {url}"
+                            if len(f"```ansi\n{chunk}\n```{mention}{final_links_text}{new_link}") < 1995:
+                                final_links_text += new_link
+                            else:
+                                overflow_links.append(url)
+
                     try:
-                        mention = f" <@{self.user_id}> 🔔" if self.bell_pending else ""
-                        await self.channel.send(f"```ansi\n{chunk}\n```{mention}")
+                        await self.channel.send(f"```ansi\n{chunk}\n```{mention}{final_links_text}")
+
+                        # Handle overflow links in follow-up messages
+                        while overflow_links:
+                            current_followup = ""
+                            while overflow_links:
+                                next_url = overflow_links[0]
+                                next_line = f"🔗 {next_url}\n"
+                                if len(current_followup) + len(next_line) < 1990:
+                                    current_followup += next_line
+                                    overflow_links.pop(0)
+                                else:
+                                    # If even a single link is too long, we have to send it anyway
+                                    # or it's just one giant link
+                                    if not current_followup:
+                                        current_followup = next_line[:1990] # Truncate extremely long links
+                                        overflow_links.pop(0)
+                                    break
+
+                            if current_followup:
+                                await self.channel.send(current_followup.strip())
                         self.bell_pending = False
                         self.buffer = self.buffer[len(chunk):].lstrip('\n')
                         await asyncio.sleep(0.6)
@@ -127,8 +166,10 @@ class SessionManager:
 
         self.client.log_event(user_id, session.username, "Session cleanup complete.")
 
-    def split_buffer(self, buf):
-        limit = 1900
+    def split_buffer(self, buf, extra_len=0):
+        # Ensure limit is at least a reasonable minimum (e.g., 500) to avoid infinite loops
+        # and stay within Discord's 2000 character limit.
+        limit = max(500, 1900 - extra_len)
         if len(buf) <= limit:
             return buf, ""
 
