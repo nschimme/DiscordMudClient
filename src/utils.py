@@ -1,6 +1,53 @@
 import urllib.parse
 import os
 import subprocess
+import re
+
+ANSI_STRIP_RE = re.compile(r'\x1b\[[\d;:]*m')
+
+def extract_urls(text):
+    """
+    Extracts unique http/https URLs from text after stripping ANSI codes.
+    Returns a list of unique URLs.
+    Handles URLs split by line wrapping.
+    """
+    if not text:
+        return []
+
+    # Strip ANSI
+    plain_text = ANSI_STRIP_RE.sub('', text)
+
+    # Heuristic to heal wrapped URLs:
+    # If a line ends with URL-safe chars and the next line starts with them (no space), join them.
+    # URL-safe characters for our purposes (excluding terminal punctuation)
+    # We exclude . and / from the end-of-line check to avoid false positives
+    # and properly handle punctuation.
+    eol_chars = r'[a-zA-Z0-9_\-?=&%#+@~]'
+    start_chars = r'[a-zA-Z0-9/_.\-?=&%#+@~]'
+    wrapped_pattern = re.compile(f'({eol_chars})\n({start_chars})')
+    plain_text = wrapped_pattern.sub(r'\1\2', plain_text)
+
+    # Basic URL regex: http(s) followed by non-whitespace
+    # We use a non-greedy match and then trim common trailing punctuation
+    matches = re.findall(r'https?://[^\s<>"]+', plain_text)
+
+    unique_urls = []
+    for url in matches:
+        # Trim trailing punctuation that is likely not part of the URL
+        # but part of the surrounding sentence.
+        # Note: We keep trailing ) if there was a corresponding ( in the URL
+        # to support Wikipedia style URLs.
+        while url and url[-1] in ".,!?;:]}'":
+            url = url[:-1]
+
+        if url and url.endswith(')'):
+            if url.count('(') < url.count(')'):
+                url = url[:-1]
+
+        if url and url not in unique_urls:
+            unique_urls.append(url)
+
+    return unique_urls
 
 def get_version():
     """
