@@ -143,3 +143,16 @@ class MudCommands(commands.Cog):
                 await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+    @app_commands.command(name="mobile", description="Launch MUME Mobile Discord Activity")
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    async def mobile_slash(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.launch_activity()
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Failed to launch activity: {e}", 
+                ephemeral=True
+            )
+
