@@ -293,7 +293,7 @@ class TelnetProtocol:
         packet = self.escape_iac(data)
         await self.safe_send(packet)
 
-    async def send_naws(self, width=80, height=24):
+    async def send_naws(self, width=80, height=150):
         if not (NAWS_MIN <= width <= NAWS_MAX) or not (NAWS_MIN <= height <= NAWS_MAX):
             raise ValueError(f"Terminal dimensions must be between {NAWS_MIN} and {NAWS_MAX}")
 
