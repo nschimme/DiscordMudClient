@@ -227,6 +227,21 @@ class DiscordMudClient(commands.Bot):
             if before.content == message.content and before_attachment_ids == after_attachment_ids:
                 return
 
+        # Intercept file uploads if there is an active edit session.
+        # Check if they have an active edit session first, to see if they're uploading an edit.
+        if session and hasattr(session, 'editor_manager') and session.editor_manager.active_sessions:
+            text_attachments = [a for a in message.attachments if self._is_text_attachment(a)]
+            if text_attachments:
+                # We handle the first text attachment as an edit writeback.
+                attachment = text_attachments[0]
+                try:
+                    content_bytes = await attachment.read()
+                    # Pass off to editor manager. If it handles it, return early!
+                    if await session.editor_manager.handle_file_upload(attachment.filename, content_bytes):
+                        return
+                except Exception as e:
+                    self.log_event(user_id, display_name, f"Failed to read edit attachment: {e}")
+
         # Combine content and attachments while enforcing MAX_INPUT_LENGTH.
         # We check the message content first to short-circuit if it's already too long.
         if len(message.content) > MAX_INPUT_LENGTH:

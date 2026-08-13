@@ -1,0 +1,138 @@
+import json
+import asyncio
+from .editor import display_file_view, display_file_edit_prompt
+
+class MumeClientHandler:
+    """
+    Handles MUME-specific GMCP client messaging.
+    Translates MUME messages to/from the generic EditorManager.
+    """
+    def __init__(self, gmcp_handler):
+        self.gmcp = gmcp_handler
+        self.protocol = gmcp_handler.protocol
+
+    def get_editor_manager(self):
+        if self.protocol.session:
+            # We will attach an editor_manager to MudSession
+            if not hasattr(self.protocol.session, 'editor_manager'):
+                from .editor import EditorManager
+                self.protocol.session.editor_manager = EditorManager(self.protocol.session)
+            return self.protocol.session.editor_manager
+        return None
+
+    def handle(self, package_cmd: str, arg: str):
+        try:
+            data = json.loads(arg) if arg else {}
+        except json.JSONDecodeError:
+            data = {}
+
+        if package_cmd == "mume.client.view":
+            self.handle_view(data)
+        elif package_cmd == "mume.client.edit":
+            self.handle_edit(data)
+        elif package_cmd == "mume.client.write":
+            self.handle_write_response(data)
+        elif package_cmd == "mume.client.canceledit":
+            self.handle_cancel_response(data)
+        elif package_cmd == "mume.client.error":
+            self.handle_error(data)
+
+    def _create_task(self, coro):
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.create_task(coro)
+        except RuntimeError:
+            # Fallback for synchronous/test environments without a running loop
+            return None
+
+    def handle_view(self, data):
+        title = data.get("title", "Untitled")
+        text = data.get("text", "")
+        if self.protocol.session:
+            self._create_task(display_file_view(self.protocol.session.channel, title, text))
+
+    def handle_edit(self, data):
+        session_id = data.get("id")
+        if session_id is None:
+            return
+
+        title = data.get("title", f"edit_{session_id}")
+        text = data.get("text", "")
+        max_size = data.get("max-size")
+
+        manager = self.get_editor_manager()
+        if not manager:
+            return
+
+        # Define callbacks
+        async def on_save(updated_text):
+            # Finalize/save the edit session
+            # Note: MUME expects ISO 8859-1 for text (except NUL) and fits in max-size.
+            # We can perform truncation if needed, but let's let the MUD handle constraints
+            # and report errors, or do a safe check.
+            payload = {
+                "id": session_id,
+                "text": updated_text
+            }
+            await self.gmcp.send("MUME.Client.Write", payload)
+
+        async def on_cancel():
+            payload = {
+                "id": session_id
+            }
+            await self.gmcp.send("MUME.Client.CancelEdit", payload)
+
+        # Register edit session
+        edit_session = manager.register_session(
+            session_id=session_id,
+            title=title,
+            text=text,
+            max_size=max_size,
+            on_save=on_save,
+            on_cancel=on_cancel
+        )
+
+        self._create_task(display_file_edit_prompt(self.protocol.session.channel, edit_session, manager))
+
+    def handle_write_response(self, data):
+        session_id = data.get("id")
+        result = data.get("result")
+
+        manager = self.get_editor_manager()
+        if not manager:
+            return
+
+        if session_id is not None:
+            if result is True:
+                # Successfully saved
+                manager.unregister_session(session_id)
+            else:
+                # Error saving
+                if self.protocol.session:
+                    self._create_task(self.protocol.session.channel.send(
+                        f"❌ **Server write failed for edit session {session_id}:** {result}"
+                    ))
+
+    def handle_cancel_response(self, data):
+        session_id = data.get("id")
+        result = data.get("result")
+
+        manager = self.get_editor_manager()
+        if not manager:
+            return
+
+        if session_id is not None:
+            if result is True:
+                manager.unregister_session(session_id)
+            else:
+                if self.protocol.session:
+                    self._create_task(self.protocol.session.channel.send(
+                        f"❌ **Server cancel failed for edit session {session_id}:** {result}"
+                    ))
+
+    def handle_error(self, data):
+        message = data.get("message", "Unknown error")
+        if self.protocol.session:
+            self._create_task(self.protocol.session.channel.send(
+                f"⚠️ **GMCP MUME.Client Error:** {message}"
+            ))

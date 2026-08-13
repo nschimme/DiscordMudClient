@@ -2,6 +2,8 @@ import asyncio
 import json
 from .config import APP_VERSION
 
+from .mume_gmcp import MumeClientHandler
+
 class GmcpHandler:
     """
     Handles GMCP protocol logic, including handshake and core modules.
@@ -12,6 +14,7 @@ class GmcpHandler:
         self.enabled = False
         self.last_ping_sent_time = None
         self.last_rtt = None
+        self.mume_client = MumeClientHandler(self)
 
         # Dispatch table for GMCP packages
         self.handlers = {
@@ -28,8 +31,8 @@ class GmcpHandler:
             "client": "DiscordMudClient",
             "version": APP_VERSION
         })
-        # Advertise supported modules
-        await self.send("Core.Supports.Set", ["Core 1"])
+        # Advertise supported modules, including MUME.Client 1
+        await self.send("Core.Supports.Set", ["Core 1", "MUME.Client 1"])
 
     async def send(self, package, data=None):
         if not self.enabled:
@@ -55,6 +58,11 @@ class GmcpHandler:
             parts = msg.split(' ', 1)
             package_cmd = parts[0].lower()
             arg = parts[1] if len(parts) > 1 else None
+
+            # Route MUME.Client messages to the specific handler
+            if package_cmd.startswith("mume.client."):
+                self.mume_client.handle(package_cmd, arg)
+                return
 
             handler = self.handlers.get(package_cmd)
             if handler:
