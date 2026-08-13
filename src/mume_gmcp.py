@@ -66,7 +66,11 @@ class MumeClientHandler:
 
         # Define callbacks
         async def on_save(updated_text):
-            # Finalize/save the edit session
+            # First, preserve the draft on the edit session so the user doesn't lose data
+            sess = manager.get_session(session_id)
+            if sess:
+                sess.text = updated_text
+
             # MUME expects ISO-8859-1 for text (except NUL) and fits in max-size.
             try:
                 encoded = updated_text.encode('iso-8859-1')
