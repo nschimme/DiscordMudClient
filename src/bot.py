@@ -238,6 +238,13 @@ class DiscordMudClient(commands.Bot):
                     content_bytes = await attachment.read()
                     # Pass off to editor manager. If it handles it, return early!
                     if await session.editor_manager.handle_file_upload(attachment.filename, content_bytes):
+                        # Provide feedback if other text attachments were uploaded at the same time and ignored
+                        if len(text_attachments) > 1:
+                            ignored_names = ", ".join(f"`{a.filename}`" for a in text_attachments[1:])
+                            await message.channel.send(
+                                f"ℹ️ **Multiple files uploaded.** Processed `{attachment.filename}`, but other "
+                                f"attachments ({ignored_names}) were ignored. Please upload files one at a time."
+                            )
                         return
                 except Exception as e:
                     self.log_event(user_id, display_name, f"Failed to read edit attachment: {e}")

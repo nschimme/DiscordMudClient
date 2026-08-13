@@ -23,6 +23,10 @@ class MudSession:
         self.heartbeat_task = asyncio.create_task(self.gmcp_heartbeat())
         self.listener_task = None
 
+        # Explicitly initialize the EditorManager to keep MudSession shape predictable
+        from .editor import EditorManager
+        self.editor_manager = EditorManager(self)
+
     def notify_activity(self):
         self.activity_event.set()
         self.activity_event.clear()

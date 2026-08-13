@@ -115,7 +115,8 @@ class EditorManager:
         return self.active_sessions.pop(session_id, None)
 
     def extract_id_from_filename(self, filename):
-        match = re.search(r'edit_(\d+)', filename.lower())
+        # Only match IDs from filenames that intentionally start with "edit_<id>"
+        match = re.search(r'^edit_(\d+)', filename.lower())
         if match:
             return int(match.group(1))
         return None

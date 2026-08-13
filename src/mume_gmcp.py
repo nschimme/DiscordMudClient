@@ -1,6 +1,9 @@
 import json
 import asyncio
+import logging
 from .editor import display_file_view, display_file_edit_prompt
+
+logger = logging.getLogger(__name__)
 
 class MumeClientHandler:
     """
@@ -13,11 +16,7 @@ class MumeClientHandler:
 
     def get_editor_manager(self):
         if self.protocol.session:
-            # We will attach an editor_manager to MudSession
-            if not hasattr(self.protocol.session, 'editor_manager'):
-                from .editor import EditorManager
-                self.protocol.session.editor_manager = EditorManager(self.protocol.session)
-            return self.protocol.session.editor_manager
+            return getattr(self.protocol.session, 'editor_manager', None)
         return None
 
     def handle(self, package_cmd: str, arg: str):
@@ -42,7 +41,13 @@ class MumeClientHandler:
             loop = asyncio.get_running_loop()
             return loop.create_task(coro)
         except RuntimeError:
-            # Fallback for synchronous/test environments without a running loop
+            # Fallback for synchronous/test environments without a running loop.
+            # Log instead of silently dropping the coroutine so misconfigurations are visible.
+            logger.warning(
+                "No running asyncio event loop; dropping coroutine %r in %s._create_task",
+                coro,
+                type(self).__name__,
+            )
             return None
 
     def handle_view(self, data):
