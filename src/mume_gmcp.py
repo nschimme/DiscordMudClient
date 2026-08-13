@@ -67,9 +67,19 @@ class MumeClientHandler:
         # Define callbacks
         async def on_save(updated_text):
             # Finalize/save the edit session
-            # Note: MUME expects ISO 8859-1 for text (except NUL) and fits in max-size.
-            # We can perform truncation if needed, but let's let the MUD handle constraints
-            # and report errors, or do a safe check.
+            # MUME expects ISO-8859-1 for text (except NUL) and fits in max-size.
+            try:
+                encoded = updated_text.encode('iso-8859-1')
+            except UnicodeEncodeError:
+                raise ValueError("Text contains characters that cannot be represented in ISO-8859-1 (Western European) encoding required by MUME.")
+
+            if b'\x00' in encoded:
+                raise ValueError("Text cannot contain NUL bytes.")
+
+            if max_size is not None and isinstance(max_size, int) and max_size >= 0:
+                if len(encoded) > max_size:
+                    raise ValueError(f"Text size ({len(encoded)} bytes) exceeds the maximum allowed size of {max_size} bytes.")
+
             payload = {
                 "id": session_id,
                 "text": updated_text

@@ -159,7 +159,11 @@ class EditorManager:
 
         # Process the save
         try:
-            text = content_bytes.decode('utf-8', errors='replace')
+            # Attempt to decode as UTF-8 first, fall back to ISO-8859-1
+            try:
+                text = content_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                text = content_bytes.decode('iso-8859-1', errors='replace')
             await session.on_save(text)
             await self.mud_session.channel.send(f"✅ **Saved edit** for '{session.title}' (ID: {session.id}).")
             return True
@@ -167,28 +171,46 @@ class EditorManager:
             await self.mud_session.channel.send(f"❌ Error processing uploaded file: {e}")
             return True
 
-async def display_file_view(channel, title, text):
-    sanitized_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-', '.')).strip()
-    sanitized_title = sanitized_title.replace(' ', '_')
-    if not sanitized_title:
-        sanitized_title = "view_file"
-    if not sanitized_title.endswith(".txt"):
-        sanitized_title += ".txt"
+def sanitize_filename(title, prefix=None, fallback="file"):
+    """
+    Sanitizes a title into a safe, consistent filename.
+    """
+    sanitized = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-', '.')).strip()
+    sanitized = sanitized.replace(' ', '_')
+    if not sanitized:
+        sanitized = fallback
+    if prefix:
+        filename = f"{prefix}_{sanitized}"
+    else:
+        filename = sanitized
+    if not filename.endswith(".txt"):
+        filename += ".txt"
+    return filename
 
-    file_bytes = text.encode('utf-8', errors='replace')
+async def display_file_view(channel, title, text):
+    filename = sanitize_filename(title, fallback="view_file")
+
+    # MUME specifies ISO-8859-1 for texts. We fall back gracefully but attempt
+    # to encode appropriately.
+    try:
+        file_bytes = text.encode('iso-8859-1')
+    except UnicodeEncodeError:
+        file_bytes = text.encode('utf-8', errors='replace')
+
     file_fp = io.BytesIO(file_bytes)
-    discord_file = discord.File(file_fp, filename=sanitized_title)
+    discord_file = discord.File(file_fp, filename=filename)
     await channel.send(content=f"📖 **Viewing: {title}**", file=discord_file)
 
 async def display_file_edit_prompt(channel, edit_session, manager):
-    sanitized_title = "".join(c for c in edit_session.title if c.isalnum() or c in (' ', '_', '-', '.')).strip()
-    sanitized_title = sanitized_title.replace(' ', '_')
-    if not sanitized_title:
-        sanitized_title = "file"
-    filename = f"edit_{edit_session.id}_{sanitized_title}.txt"
+    prefix = f"edit_{edit_session.id}"
+    filename = sanitize_filename(edit_session.title, prefix=prefix, fallback="file")
 
     text_content = edit_session.text if edit_session.text is not None else ""
-    file_bytes = text_content.encode('utf-8', errors='replace')
+    try:
+        file_bytes = text_content.encode('iso-8859-1')
+    except UnicodeEncodeError:
+        file_bytes = text_content.encode('utf-8', errors='replace')
+
     file_fp = io.BytesIO(file_bytes)
     discord_file = discord.File(file_fp, filename=filename)
 
