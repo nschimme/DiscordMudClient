@@ -1,8 +1,11 @@
 import io
 import re
 import discord
+import logging
 from discord.ui import View, Button, Modal, TextInput
 from .config import DISCORD_MODAL_LIMIT, MUME_CHARACTER_ENCODING
+
+logger = logging.getLogger(__name__)
 
 class EditSession:
     def __init__(self, session_id, title, text, max_size, on_save, on_cancel):
@@ -13,6 +16,32 @@ class EditSession:
         self.on_save = on_save       # async function taking text
         self.on_cancel = on_cancel   # async function
         self.prompt_message = None   # Tracks the Discord prompt message with the view
+
+    def validate(self, updated_text):
+        """
+        Validates the text length and character set encoding.
+        Saves the text as a draft to prevent data loss.
+        Raises ValueError if invalid, otherwise returns the encoded bytes.
+        """
+        # Save draft immediately to prevent user data loss
+        self.text = updated_text
+
+        # Validate characters can be represented in MUME_CHARACTER_ENCODING (Latin-1)
+        try:
+            encoded = updated_text.encode(MUME_CHARACTER_ENCODING)
+        except UnicodeEncodeError:
+            raise ValueError(f"Text contains characters that cannot be represented in {MUME_CHARACTER_ENCODING.upper()} (Western European) encoding required by MUME.")
+
+        # Validate no NUL byte is present
+        if b'\x00' in encoded:
+            raise ValueError("Text cannot contain NUL bytes.")
+
+        # Validate maximum size limit
+        if self.max_size is not None and isinstance(self.max_size, int) and self.max_size >= 0:
+            if len(encoded) > self.max_size:
+                raise ValueError(f"Text size ({len(encoded)} bytes) exceeds the maximum allowed size of {self.max_size} bytes.")
+
+        return encoded
 
 class EditorModal(Modal):
     def __init__(self, edit_session, view_message_to_update=None):
@@ -41,6 +70,8 @@ class EditorModal(Modal):
         text_val = self.text_input.value
         await interaction.response.defer(ephemeral=True)
         try:
+            # Enforce centralized validations and draft saving
+            self.edit_session.validate(text_val)
             await self.edit_session.on_save(text_val)
             await interaction.followup.send("✅ Content submitted successfully!", ephemeral=True)
 
@@ -51,8 +82,13 @@ class EditorModal(Modal):
                     await msg_to_edit.edit(content=f"✅ **Saved edit** for '{self.edit_session.title}' (ID: {self.edit_session.id}).", view=None)
                 except Exception:
                     pass
+        except ValueError as e:
+            # Safe validation error
+            await interaction.followup.send(f"❌ Validation Error: {e}", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error saving content: {e}", ephemeral=True)
+            # Unexpected error: log securely with traceback and return generic error message
+            logger.exception("Unexpected error in EditorModal.on_submit:")
+            await interaction.followup.send("❌ An unexpected error occurred while saving the content. Please try again.", ephemeral=True)
 
 class EditorView(View):
     def __init__(self, edit_session, manager):
@@ -96,12 +132,14 @@ class EditorView(View):
             await interaction.response.send_message("❌ This edit session is no longer active.", ephemeral=True)
             return
 
-        await interaction.response.defer()
         try:
             await self.edit_session.on_cancel()
-            await interaction.edit_original_response(content=f"❌ **Edit '{self.edit_session.title}' (ID: {self.edit_session.id})** was cancelled.", view=None)
+            # Use standard response.edit_message for component interactions instead of edit_original_response
+            await interaction.response.edit_message(content=f"❌ **Edit '{self.edit_session.title}' (ID: {self.edit_session.id})** was cancelled.", view=None)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error cancelling session: {e}", ephemeral=True)
+            # Unexpected error: log securely and return generic error message
+            logger.exception("Unexpected error during edit cancellation in on_cancel_click:")
+            await interaction.followup.send("❌ An unexpected error occurred while cancelling the edit session.", ephemeral=True)
 
 class EditorManager:
     def __init__(self, mud_session):
@@ -172,8 +210,8 @@ class EditorManager:
             early_limit = max_size * 4 + 100
             if len(content_bytes) > early_limit:
                 await self.mud_session.channel.send(
-                    f"❌ **File too large:** Uploaded file size ({len(content_bytes)} bytes) is far larger than the "
-                    f"maximum allowed limit of {max_size} bytes."
+                    f"❌ **File too large:** Uploaded file size ({len(content_bytes)} bytes) exceeds the "
+                    f"early protective safeguard limit ({early_limit} bytes) for maximum allowed MUME size of {max_size} bytes."
                 )
                 return True
 
@@ -185,19 +223,8 @@ class EditorManager:
             except UnicodeDecodeError:
                 text = content_bytes.decode(MUME_CHARACTER_ENCODING, errors='replace')
 
-            # Enforce max_size consistently for uploaded files
-            if max_size is not None and isinstance(max_size, int) and max_size >= 0:
-                try:
-                    encoded_len = len(text.encode(MUME_CHARACTER_ENCODING))
-                except Exception:
-                    encoded_len = len(content_bytes)  # fallback
-                if encoded_len > max_size:
-                    await self.mud_session.channel.send(
-                        f"❌ **File too large:** Uploaded content is {encoded_len} bytes, which exceeds the "
-                        f"maximum allowed limit of {max_size} bytes for '{session.title}' (ID: {session.id})."
-                    )
-                    return True
-
+            # Enforce centralized validations and draft saving on file uploads
+            session.validate(text)
             await session.on_save(text)
 
             # Standardize feedback: edit the prompt message to reflect the save and remove interactive buttons
@@ -209,8 +236,14 @@ class EditorManager:
             else:
                 await self.mud_session.channel.send(f"✅ **Saved edit** for '{session.title}' (ID: {session.id}).")
             return True
+        except ValueError as e:
+            # Safe validation error
+            await self.mud_session.channel.send(f"❌ Validation Error: {e}")
+            return True
         except Exception as e:
-            await self.mud_session.channel.send(f"❌ Error processing uploaded file: {e}")
+            # Unexpected error: log securely and return generic error message
+            logger.exception("Unexpected error in EditorManager.handle_file_upload:")
+            await self.mud_session.channel.send("❌ An unexpected error occurred while processing the uploaded file. Please try again.")
             return True
 
 def sanitize_filename(title, prefix=None, fallback="file"):

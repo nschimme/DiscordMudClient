@@ -75,24 +75,9 @@ class MumeClientHandler:
 
         # Define callbacks
         async def on_save(updated_text):
-            # First, preserve the draft on the edit session so the user doesn't lose data
-            sess = manager.get_session(session_id)
-            if sess:
-                sess.text = updated_text
-
-            # MUME expects MUME_CHARACTER_ENCODING for text (except NUL) and fits in max-size.
-            try:
-                encoded = updated_text.encode(MUME_CHARACTER_ENCODING)
-            except UnicodeEncodeError:
-                raise ValueError(f"Text contains characters that cannot be represented in {MUME_CHARACTER_ENCODING.upper()} (Western European) encoding required by MUME.")
-
-            if b'\x00' in encoded:
-                raise ValueError("Text cannot contain NUL bytes.")
-
-            if max_size is not None and isinstance(max_size, int) and max_size >= 0:
-                if len(encoded) > max_size:
-                    raise ValueError(f"Text size ({len(encoded)} bytes) exceeds the maximum allowed size of {max_size} bytes.")
-
+            # Finalize/save the edit session.
+            # All validation checks (character encodings, NUL bytes, size limits)
+            # are centralized and handled in the EditSession.validate() method before this runs.
             payload = {
                 "id": session_id,
                 "text": updated_text
