@@ -248,6 +248,21 @@ class DiscordMudClient(commands.Bot):
                         return
                 except Exception as e:
                     self.log_event(user_id, display_name, f"Failed to read edit attachment: {e}")
+                    # Surface the failure to the user so they know the upload was ignored
+                    try:
+                        await message.channel.send(
+                            f"⚠️ **Attachment not processed.** There was an error reading "
+                            f"`{attachment.filename}` and it was ignored: {e}. "
+                            f"Please try re-uploading the file or use a different format."
+                        )
+                    except Exception:
+                        # Avoid failing the handler due to notification issues
+                        self.log_event(
+                            user_id,
+                            display_name,
+                            f"Failed to notify user about edit attachment read error for "
+                            f"{getattr(attachment, 'filename', 'unknown file')}."
+                        )
 
         # Combine content and attachments while enforcing MAX_INPUT_LENGTH.
         # We check the message content first to short-circuit if it's already too long.

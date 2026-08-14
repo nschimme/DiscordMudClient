@@ -2,6 +2,7 @@ import io
 import re
 import discord
 from discord.ui import View, Button, Modal, TextInput
+from .config import DISCORD_MODAL_LIMIT, MUME_CHARACTER_ENCODING
 
 class EditSession:
     def __init__(self, session_id, title, text, max_size, on_save, on_cancel):
@@ -11,6 +12,7 @@ class EditSession:
         self.max_size = max_size
         self.on_save = on_save       # async function taking text
         self.on_cancel = on_cancel   # async function
+        self.prompt_message = None   # Tracks the Discord prompt message with the view
 
 class EditorModal(Modal):
     def __init__(self, edit_session, view_message_to_update=None):
@@ -20,17 +22,17 @@ class EditorModal(Modal):
         self.edit_session = edit_session
         self.view_message_to_update = view_message_to_update
 
-        # Limit text input to 4000 characters (Discord limit)
+        # Limit text input to DISCORD_MODAL_LIMIT characters
         initial_val = edit_session.text
-        if len(initial_val) > 4000:
-            initial_val = initial_val[:4000]
+        if len(initial_val) > DISCORD_MODAL_LIMIT:
+            initial_val = initial_val[:DISCORD_MODAL_LIMIT]
 
         self.text_input = TextInput(
             label="File Content",
             style=discord.TextStyle.paragraph,
             placeholder="Type your content here...",
             default=initial_val,
-            max_length=4000,
+            max_length=DISCORD_MODAL_LIMIT,
             required=False
         )
         self.add_item(self.text_input)
@@ -41,9 +43,12 @@ class EditorModal(Modal):
         try:
             await self.edit_session.on_save(text_val)
             await interaction.followup.send("✅ Content submitted successfully!", ephemeral=True)
-            if self.view_message_to_update:
+
+            # Standardize feedback: edit the prompt message to remove interactive buttons
+            msg_to_edit = self.edit_session.prompt_message or self.view_message_to_update
+            if msg_to_edit:
                 try:
-                    await self.view_message_to_update.edit(content=f"✅ **Edit '{self.edit_session.title}' (ID: {self.edit_session.id})** has been saved/submitted.", view=None)
+                    await msg_to_edit.edit(content=f"✅ **Saved edit** for '{self.edit_session.title}' (ID: {self.edit_session.id}).", view=None)
                 except Exception:
                     pass
         except Exception as e:
@@ -57,10 +62,10 @@ class EditorView(View):
 
         # Determine if edit button is disabled
         text_len = len(edit_session.text) if edit_session.text else 0
-        disable_edit = text_len > 4000
+        disable_edit = text_len > DISCORD_MODAL_LIMIT
 
         self.edit_btn = Button(
-            label="Edit" if not disable_edit else "Too long for Modal (>4k)",
+            label="Edit" if not disable_edit else f"Too long for Modal (>{DISCORD_MODAL_LIMIT // 1000}k)",
             style=discord.ButtonStyle.green,
             disabled=disable_edit,
             custom_id=f"editor_edit_{edit_session.id}"
@@ -160,13 +165,36 @@ class EditorManager:
 
         # Process the save
         try:
-            # Attempt to decode as UTF-8 first, fall back to ISO-8859-1
+            # Attempt to decode as UTF-8 first, fall back to MUME_CHARACTER_ENCODING
             try:
                 text = content_bytes.decode('utf-8')
             except UnicodeDecodeError:
-                text = content_bytes.decode('iso-8859-1', errors='replace')
+                text = content_bytes.decode(MUME_CHARACTER_ENCODING, errors='replace')
+
+            # Enforce max_size consistently for uploaded files
+            max_size = getattr(session, "max_size", None)
+            if max_size is not None and isinstance(max_size, int) and max_size >= 0:
+                try:
+                    encoded_len = len(text.encode(MUME_CHARACTER_ENCODING))
+                except Exception:
+                    encoded_len = len(content_bytes)  # fallback
+                if encoded_len > max_size:
+                    await self.mud_session.channel.send(
+                        f"❌ **File too large:** Uploaded content is {encoded_len} bytes, which exceeds the "
+                        f"maximum allowed limit of {max_size} bytes for '{session.title}' (ID: {session.id})."
+                    )
+                    return True
+
             await session.on_save(text)
-            await self.mud_session.channel.send(f"✅ **Saved edit** for '{session.title}' (ID: {session.id}).")
+
+            # Standardize feedback: edit the prompt message to reflect the save and remove interactive buttons
+            if session.prompt_message:
+                try:
+                    await session.prompt_message.edit(content=f"✅ **Saved edit** for '{session.title}' (ID: {session.id}) via file upload.", view=None)
+                except Exception:
+                    pass
+            else:
+                await self.mud_session.channel.send(f"✅ **Saved edit** for '{session.title}' (ID: {session.id}).")
             return True
         except Exception as e:
             await self.mud_session.channel.send(f"❌ Error processing uploaded file: {e}")
@@ -191,10 +219,10 @@ def sanitize_filename(title, prefix=None, fallback="file"):
 async def display_file_view(channel, title, text):
     filename = sanitize_filename(title, fallback="view_file")
 
-    # MUME specifies ISO-8859-1 for texts. We fall back gracefully but attempt
+    # MUME specifies our centralized encoding for texts. We fall back gracefully but attempt
     # to encode appropriately.
     try:
-        file_bytes = text.encode('iso-8859-1')
+        file_bytes = text.encode(MUME_CHARACTER_ENCODING)
     except UnicodeEncodeError:
         file_bytes = text.encode('utf-8', errors='replace')
 
@@ -208,7 +236,7 @@ async def display_file_edit_prompt(channel, edit_session, manager):
 
     text_content = edit_session.text if edit_session.text is not None else ""
     try:
-        file_bytes = text_content.encode('iso-8859-1')
+        file_bytes = text_content.encode(MUME_CHARACTER_ENCODING)
     except UnicodeEncodeError:
         file_bytes = text_content.encode('utf-8', errors='replace')
 
@@ -217,9 +245,10 @@ async def display_file_edit_prompt(channel, edit_session, manager):
 
     view = EditorView(edit_session, manager)
     msg = f"📝 **Edit Request:** '{edit_session.title}' (ID: {edit_session.id})"
-    if len(text_content) > 4000:
-        msg += "\n⚠️ This file is too large to edit via Discord's inline input. Please download the file, edit it, and upload the updated file back to this channel!"
+    if len(text_content) > DISCORD_MODAL_LIMIT:
+        msg += f"\n⚠️ This file is too large to edit via Discord's inline input (>{DISCORD_MODAL_LIMIT // 1000}k characters). Please download the file, edit it, and upload the updated file back to this channel!"
     else:
         msg += "\n💡 You can edit this file inline using the **Edit** button below, OR download, edit, and upload it back here!"
 
-    await channel.send(content=msg, file=discord_file, view=view)
+    prompt_msg = await channel.send(content=msg, file=discord_file, view=view)
+    edit_session.prompt_message = prompt_msg

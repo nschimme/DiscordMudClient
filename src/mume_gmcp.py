@@ -2,6 +2,7 @@ import json
 import asyncio
 import logging
 from .editor import display_file_view, display_file_edit_prompt
+from .config import MUME_CHARACTER_ENCODING
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class MumeClientHandler:
             self.handle_cancel_response(data)
         elif package_cmd == "mume.client.error":
             self.handle_error(data)
+        elif package_cmd.startswith("mume.client."):
+            logger.debug("Unhandled MUME.Client package: %s payload=%r", package_cmd, data)
 
     def _create_task(self, coro):
         try:
@@ -76,11 +79,11 @@ class MumeClientHandler:
             if sess:
                 sess.text = updated_text
 
-            # MUME expects ISO-8859-1 for text (except NUL) and fits in max-size.
+            # MUME expects MUME_CHARACTER_ENCODING for text (except NUL) and fits in max-size.
             try:
-                encoded = updated_text.encode('iso-8859-1')
+                encoded = updated_text.encode(MUME_CHARACTER_ENCODING)
             except UnicodeEncodeError:
-                raise ValueError("Text contains characters that cannot be represented in ISO-8859-1 (Western European) encoding required by MUME.")
+                raise ValueError(f"Text contains characters that cannot be represented in {MUME_CHARACTER_ENCODING.upper()} (Western European) encoding required by MUME.")
 
             if b'\x00' in encoded:
                 raise ValueError("Text cannot contain NUL bytes.")
