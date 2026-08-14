@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 # Local editor constants
 DISCORD_MODAL_LIMIT = 4000
-DEFAULT_TEXT_ENCODING = "iso-8859-1"
+DEFAULT_TEXT_ENCODING = "utf-8"
 
 class EditSession:
     def __init__(self, session_id, title, text, max_size, on_save, on_cancel, validator=None):
