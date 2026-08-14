@@ -3,6 +3,7 @@ import discord
 from .config import MAX_BUFFER_SIZE, SESSION_CLOSE_TIMEOUT
 from .protocol import TelnetProtocol
 from .utils import extract_urls
+from .editor import EditorManager
 
 class MudSession:
     def __init__(self, manager, user_id, reader, writer, channel, username):
@@ -22,6 +23,9 @@ class MudSession:
         self.worker_task = asyncio.create_task(self.worker())
         self.heartbeat_task = asyncio.create_task(self.gmcp_heartbeat())
         self.listener_task = None
+
+        # Explicitly initialize the EditorManager to keep MudSession shape predictable
+        self.editor_manager = EditorManager(self)
 
     def notify_activity(self):
         self.activity_event.set()
