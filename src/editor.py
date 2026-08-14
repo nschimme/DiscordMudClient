@@ -33,7 +33,7 @@ class EditSession:
             if size_in_bytes > early_limit:
                 raise ValueError(
                     f"Uploaded file size ({size_in_bytes} bytes) exceeds the "
-                    f"early protective safeguard limit ({early_limit} bytes) for maximum allowed MUME size of {self.max_size} bytes."
+                    f"early protective safeguard limit ({early_limit} bytes) for maximum allowed size of {self.max_size} bytes."
                 )
         else:
             if size_in_bytes > self.max_size:
@@ -180,8 +180,8 @@ class EditorManager:
         return self.active_sessions.pop(session_id, None)
 
     def extract_id_from_filename(self, filename):
-        # Only match IDs from filenames starting strictly with the generated "edit_<id>_" pattern
-        match = re.search(r'^edit_(\d+)_', filename.lower())
+        # Match IDs from filenames starting with "edit_<id>_" or "edit_<id>.txt"
+        match = re.search(r'^edit_(\d+)(?:[_\.]|$)', filename.lower())
         if match:
             return int(match.group(1))
         return None
@@ -216,9 +216,10 @@ class EditorManager:
             else:
                 # Multiple active sessions, we cannot disambiguate without a file name match
                 active_ids = ", ".join(str(k) for k in self.active_sessions.keys())
+                example_id = list(self.active_sessions.keys())[0]
                 await self.mud_session.channel.send(
                     f"⚠️ **Multiple active edit sessions!** Please name your uploaded file starting with "
-                    f"`edit_<id>_` (for example, `edit_{list(self.active_sessions.keys())[0]}.txt`) "
+                    f"`edit_<id>_` or `edit_<id>.txt` (for example, `edit_{example_id}_file.txt` or `edit_{example_id}.txt`) "
                     f"so I know which file you are updating. Active IDs: {active_ids}"
                 )
                 return True
