@@ -252,7 +252,7 @@ class DiscordMudClient(commands.Bot):
                     try:
                         await message.channel.send(
                             f"⚠️ **Attachment not processed.** There was an error reading "
-                            f"`{attachment.filename}` and it was ignored: {e}. "
+                            f"`{attachment.filename}` and it was ignored. "
                             f"Please try re-uploading the file or use a different format."
                         )
                     except Exception:
