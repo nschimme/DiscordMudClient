@@ -17,6 +17,30 @@ class EditSession:
         self.on_cancel = on_cancel   # async function
         self.prompt_message = None   # Tracks the Discord prompt message with the view
 
+    def check_size_limit(self, size_in_bytes, is_safeguard=False):
+        """
+        Enforces a consistent size limit check.
+        If is_safeguard is True, applies a generous margin to prevent false-positives
+        on raw undecoded bytes, but reports the configured maximum limit consistently.
+        """
+        if self.max_size is None or not isinstance(self.max_size, int) or self.max_size < 0:
+            return
+
+        if is_safeguard:
+            # Under UTF-8 encoding, characters occupy 1 to 4 bytes. We allow a safe margin of
+            # 4x the maximum size plus a small buffer to prevent false-positives before decoding.
+            early_limit = self.max_size * 4 + 100
+            if size_in_bytes > early_limit:
+                raise ValueError(
+                    f"Uploaded file size ({size_in_bytes} bytes) exceeds the "
+                    f"early protective safeguard limit ({early_limit} bytes) for maximum allowed MUME size of {self.max_size} bytes."
+                )
+        else:
+            if size_in_bytes > self.max_size:
+                raise ValueError(
+                    f"Text size ({size_in_bytes} bytes) exceeds the maximum allowed size of {self.max_size} bytes."
+                )
+
     def validate(self, updated_text):
         """
         Validates the text length and character set encoding.
@@ -36,10 +60,8 @@ class EditSession:
         if b'\x00' in encoded:
             raise ValueError("Text cannot contain NUL bytes.")
 
-        # Validate maximum size limit
-        if self.max_size is not None and isinstance(self.max_size, int) and self.max_size >= 0:
-            if len(encoded) > self.max_size:
-                raise ValueError(f"Text size ({len(encoded)} bytes) exceeds the maximum allowed size of {self.max_size} bytes.")
+        # Validate maximum size limit consistently
+        self.check_size_limit(len(encoded), is_safeguard=False)
 
         return encoded
 
@@ -158,8 +180,8 @@ class EditorManager:
         return self.active_sessions.pop(session_id, None)
 
     def extract_id_from_filename(self, filename):
-        # Only match IDs from filenames that intentionally start with "edit_<id>"
-        match = re.search(r'^edit_(\d+)', filename.lower())
+        # Only match IDs from filenames starting strictly with the generated "edit_<id>_" pattern
+        match = re.search(r'^edit_(\d+)_', filename.lower())
         if match:
             return int(match.group(1))
         return None
@@ -203,17 +225,11 @@ class EditorManager:
 
         # Enforce a generic max_size constraint on raw content_bytes first to short-circuit early.
         # This protects the bot from decoding/processing excessively large files (e.g., multi-MB uploads).
-        max_size = getattr(session, "max_size", None)
-        if max_size is not None and isinstance(max_size, int) and max_size >= 0:
-            # Under UTF-8 encoding, characters occupy 1 to 4 bytes. We allow a safe margin of
-            # 4x the maximum size plus a small buffer to prevent false-positives before decoding.
-            early_limit = max_size * 4 + 100
-            if len(content_bytes) > early_limit:
-                await self.mud_session.channel.send(
-                    f"❌ **File too large:** Uploaded file size ({len(content_bytes)} bytes) exceeds the "
-                    f"early protective safeguard limit ({early_limit} bytes) for maximum allowed MUME size of {max_size} bytes."
-                )
-                return True
+        try:
+            session.check_size_limit(len(content_bytes), is_safeguard=True)
+        except ValueError as e:
+            await self.mud_session.channel.send(f"❌ **File too large:** {e}")
+            return True
 
         # Process the save
         try:
