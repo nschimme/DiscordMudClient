@@ -23,7 +23,8 @@ class MumeClientHandler:
     def handle(self, package_cmd: str, arg: str):
         try:
             data = json.loads(arg) if arg else {}
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to decode GMCP payload for package %r. Raw arg: %r. Error: %s", package_cmd, arg, e)
             data = {}
 
         if package_cmd == "mume.client.view":

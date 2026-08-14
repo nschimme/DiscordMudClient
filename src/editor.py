@@ -163,6 +163,20 @@ class EditorManager:
                 )
                 return True
 
+        # Enforce a generic max_size constraint on raw content_bytes first to short-circuit early.
+        # This protects the bot from decoding/processing excessively large files (e.g., multi-MB uploads).
+        max_size = getattr(session, "max_size", None)
+        if max_size is not None and isinstance(max_size, int) and max_size >= 0:
+            # Under UTF-8 encoding, characters occupy 1 to 4 bytes. We allow a safe margin of
+            # 4x the maximum size plus a small buffer to prevent false-positives before decoding.
+            early_limit = max_size * 4 + 100
+            if len(content_bytes) > early_limit:
+                await self.mud_session.channel.send(
+                    f"❌ **File too large:** Uploaded file size ({len(content_bytes)} bytes) is far larger than the "
+                    f"maximum allowed limit of {max_size} bytes."
+                )
+                return True
+
         # Process the save
         try:
             # Attempt to decode as UTF-8 first, fall back to MUME_CHARACTER_ENCODING
@@ -172,7 +186,6 @@ class EditorManager:
                 text = content_bytes.decode(MUME_CHARACTER_ENCODING, errors='replace')
 
             # Enforce max_size consistently for uploaded files
-            max_size = getattr(session, "max_size", None)
             if max_size is not None and isinstance(max_size, int) and max_size >= 0:
                 try:
                     encoded_len = len(text.encode(MUME_CHARACTER_ENCODING))

@@ -3,6 +3,7 @@ import discord
 from .config import MAX_BUFFER_SIZE, SESSION_CLOSE_TIMEOUT
 from .protocol import TelnetProtocol
 from .utils import extract_urls
+from .editor import EditorManager
 
 class MudSession:
     def __init__(self, manager, user_id, reader, writer, channel, username):
@@ -24,7 +25,6 @@ class MudSession:
         self.listener_task = None
 
         # Explicitly initialize the EditorManager to keep MudSession shape predictable
-        from .editor import EditorManager
         self.editor_manager = EditorManager(self)
 
     def notify_activity(self):
