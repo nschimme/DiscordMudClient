@@ -2,9 +2,9 @@ import json
 import asyncio
 import logging
 from .editor import display_file_view, display_file_edit_prompt
-from .config import MUME_CHARACTER_ENCODING
-
 logger = logging.getLogger(__name__)
+
+MUME_CHARACTER_ENCODING = "iso-8859-1"
 
 class MumeClientHandler:
     """
@@ -75,9 +75,6 @@ class MumeClientHandler:
 
         # Define callbacks
         async def on_save(updated_text):
-            # Finalize/save the edit session.
-            # All validation checks (character encodings, NUL bytes, size limits)
-            # are centralized and handled in the EditSession.validate() method before this runs.
             payload = {
                 "id": session_id,
                 "text": updated_text
@@ -90,6 +87,19 @@ class MumeClientHandler:
             }
             await self.gmcp.send("MUME.Client.CancelEdit", payload)
 
+        def mume_validator(session, updated_text):
+            try:
+                encoded = updated_text.encode(MUME_CHARACTER_ENCODING)
+            except UnicodeEncodeError:
+                raise ValueError(f"Text contains characters that cannot be represented in {MUME_CHARACTER_ENCODING.upper()} (Western European) encoding required by MUME.")
+
+            if b'\x00' in encoded:
+                raise ValueError("Text cannot contain NUL bytes.")
+
+            if session.max_size is not None and isinstance(session.max_size, int) and session.max_size >= 0:
+                if len(encoded) > session.max_size:
+                    raise ValueError(f"Text size ({len(encoded)} bytes) exceeds the maximum allowed size of {session.max_size} bytes.")
+
         # Register edit session
         edit_session = manager.register_session(
             session_id=session_id,
@@ -97,7 +107,8 @@ class MumeClientHandler:
             text=text,
             max_size=max_size,
             on_save=on_save,
-            on_cancel=on_cancel
+            on_cancel=on_cancel,
+            validator=mume_validator
         )
 
         self._create_task(display_file_edit_prompt(self.protocol.session.channel, edit_session, manager))

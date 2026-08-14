@@ -15,7 +15,3 @@ MAX_BUFFER_SIZE = 50000  # Prevent memory exhaustion
 MAX_INPUT_LENGTH = 500   # Prevent MUD buffer flooding
 ANSI_TIMEOUT = 2.0       # Timeout for network write/drain operations
 SESSION_CLOSE_TIMEOUT = 2.0
-
-# Centralized constants for Discord limits and MUME expectations
-DISCORD_MODAL_LIMIT = 4000
-MUME_CHARACTER_ENCODING = "iso-8859-1"

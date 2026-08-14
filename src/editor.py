@@ -3,18 +3,21 @@ import re
 import discord
 import logging
 from discord.ui import View, Button, Modal, TextInput
-from .config import DISCORD_MODAL_LIMIT, MUME_CHARACTER_ENCODING
-
 logger = logging.getLogger(__name__)
 
+# Local editor constants
+DISCORD_MODAL_LIMIT = 4000
+DEFAULT_TEXT_ENCODING = "iso-8859-1"
+
 class EditSession:
-    def __init__(self, session_id, title, text, max_size, on_save, on_cancel):
+    def __init__(self, session_id, title, text, max_size, on_save, on_cancel, validator=None):
         self.id = session_id
         self.title = title or f"file_{session_id}"
         self.text = text if text is not None else ""
         self.max_size = max_size
         self.on_save = on_save       # async function taking text
         self.on_cancel = on_cancel   # async function
+        self.validator = validator   # optional callable taking (session, updated_text)
         self.prompt_message = None   # Tracks the Discord prompt message with the view
 
     def check_size_limit(self, size_in_bytes, is_safeguard=False):
@@ -43,27 +46,18 @@ class EditSession:
 
     def validate(self, updated_text):
         """
-        Validates the text length and character set encoding.
-        Saves the text as a draft to prevent data loss.
-        Raises ValueError if invalid, otherwise returns the encoded bytes.
+        Validates the text length and runs any registered custom validator.
+        Saves the text as a draft immediately to prevent data loss.
         """
         # Save draft immediately to prevent user data loss
         self.text = updated_text
 
-        # Validate characters can be represented in MUME_CHARACTER_ENCODING (Latin-1)
-        try:
-            encoded = updated_text.encode(MUME_CHARACTER_ENCODING)
-        except UnicodeEncodeError:
-            raise ValueError(f"Text contains characters that cannot be represented in {MUME_CHARACTER_ENCODING.upper()} (Western European) encoding required by MUME.")
+        # If a custom validator was provided (e.g. by MumeClientHandler), run it!
+        if self.validator:
+            self.validator(self, updated_text)
 
-        # Validate no NUL byte is present
-        if b'\x00' in encoded:
-            raise ValueError("Text cannot contain NUL bytes.")
-
-        # Validate maximum size limit consistently
-        self.check_size_limit(len(encoded), is_safeguard=False)
-
-        return encoded
+        # Enforce size limit check on UTF-8 bytes by default
+        self.check_size_limit(len(updated_text.encode('utf-8')), is_safeguard=False)
 
 class EditorModal(Modal):
     def __init__(self, edit_session, view_message_to_update=None):
@@ -168,8 +162,8 @@ class EditorManager:
         self.mud_session = mud_session
         self.active_sessions = {} # {id: EditSession}
 
-    def register_session(self, session_id, title, text, max_size, on_save, on_cancel):
-        edit_session = EditSession(session_id, title, text, max_size, on_save, on_cancel)
+    def register_session(self, session_id, title, text, max_size, on_save, on_cancel, validator=None):
+        edit_session = EditSession(session_id, title, text, max_size, on_save, on_cancel, validator=validator)
         self.active_sessions[session_id] = edit_session
         return edit_session
 
@@ -199,7 +193,7 @@ class EditorManager:
             if not session:
                 # User uploaded a file with a matching pattern but no active session
                 await self.mud_session.channel.send(
-                    f"⚠️ **No active edit session found!** This file looks like a MUME edit file, "
+                    f"⚠️ **No active edit session found!** This file looks like an edit file, "
                     f"but you do not have an active edit session for ID `{target_id}`. "
                     f"The file contents were not sent."
                 )
@@ -234,11 +228,11 @@ class EditorManager:
 
         # Process the save
         try:
-            # Attempt to decode as UTF-8 first, fall back to MUME_CHARACTER_ENCODING
+            # Attempt to decode as UTF-8 first, fall back to DEFAULT_TEXT_ENCODING
             try:
                 text = content_bytes.decode('utf-8')
             except UnicodeDecodeError:
-                text = content_bytes.decode(MUME_CHARACTER_ENCODING, errors='replace')
+                text = content_bytes.decode(DEFAULT_TEXT_ENCODING, errors='replace')
 
             # Enforce centralized validations and draft saving on file uploads
             session.validate(text)
@@ -282,10 +276,9 @@ def sanitize_filename(title, prefix=None, fallback="file"):
 async def display_file_view(channel, title, text):
     filename = sanitize_filename(title, fallback="view_file")
 
-    # MUME specifies our centralized encoding for texts. We fall back gracefully but attempt
-    # to encode appropriately.
+    # Fall back gracefully but attempt to encode appropriately using DEFAULT_TEXT_ENCODING.
     try:
-        file_bytes = text.encode(MUME_CHARACTER_ENCODING)
+        file_bytes = text.encode(DEFAULT_TEXT_ENCODING)
     except UnicodeEncodeError:
         file_bytes = text.encode('utf-8', errors='replace')
 
@@ -299,7 +292,7 @@ async def display_file_edit_prompt(channel, edit_session, manager):
 
     text_content = edit_session.text if edit_session.text is not None else ""
     try:
-        file_bytes = text_content.encode(MUME_CHARACTER_ENCODING)
+        file_bytes = text_content.encode(DEFAULT_TEXT_ENCODING)
     except UnicodeEncodeError:
         file_bytes = text_content.encode('utf-8', errors='replace')
 
