@@ -75,6 +75,16 @@ async def connect_mud(protocol, host, port, path='/', on_warning=None):
         if sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # Detect dead peers (half-open connections) within ~1-2 minutes.
+            # Constant names differ per platform (macOS: TCP_KEEPALIVE for idle).
+            idle = getattr(socket, 'TCP_KEEPIDLE', getattr(socket, 'TCP_KEEPALIVE', None))
+            for opt, val in ((idle, 60), (getattr(socket, 'TCP_KEEPINTVL', None), 10),
+                             (getattr(socket, 'TCP_KEEPCNT', None), 5)):
+                if opt is not None:
+                    try:
+                        sock.setsockopt(socket.IPPROTO_TCP, opt, val)
+                    except OSError:
+                        pass
 
     elif protocol in ('ws', 'wss'):
         use_ssl = (protocol == 'wss')
@@ -85,14 +95,14 @@ async def connect_mud(protocol, host, port, path='/', on_warning=None):
             ssl_context = ssl.create_default_context()
 
         try:
-            ws = await websockets.connect(ws_url, ssl=ssl_context, ping_timeout=None)
+            ws = await websockets.connect(ws_url, ssl=ssl_context, ping_interval=30, ping_timeout=30)
         except (ssl.SSLError, Exception) as e:
             if isinstance(e, ssl.SSLError) and on_warning:
                 await on_warning(f"WSS Verification failed: {e}. Retrying leniently...")
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
-                ws = await websockets.connect(ws_url, ssl=ssl_context, ping_timeout=None)
+                ws = await websockets.connect(ws_url, ssl=ssl_context, ping_interval=30, ping_timeout=30)
             else:
                 raise e
 

@@ -19,6 +19,7 @@ class EditSession:
         self.on_cancel = on_cancel   # async function
         self.validator = validator   # optional callable taking (session, updated_text)
         self.prompt_message = None   # Tracks the Discord prompt message with the view
+        self.pending = None          # "save" / "cancel" while awaiting the server's answer
 
     def check_size_limit(self, size_in_bytes, is_safeguard=False):
         """
@@ -49,6 +50,9 @@ class EditSession:
         Validates the text length and runs any registered custom validator.
         Saves the text as a draft immediately to prevent data loss.
         """
+        # Normalize line endings (Windows editors / Discord uploads) so modal and upload paths match
+        updated_text = updated_text.replace('\r\n', '\n').replace('\r', '\n')
+
         # Save draft immediately to prevent user data loss
         self.text = updated_text
 
@@ -58,13 +62,15 @@ class EditSession:
 
         # Enforce size limit check on UTF-8 bytes by default
         self.check_size_limit(len(updated_text.encode('utf-8')), is_safeguard=False)
+        return updated_text
 
 class EditorModal(Modal):
-    def __init__(self, edit_session, view_message_to_update=None):
+    def __init__(self, edit_session, manager, view_message_to_update=None):
         # Modal title can be at most 45 characters
         title = f"Edit: {edit_session.title}"[:45]
         super().__init__(title=title)
         self.edit_session = edit_session
+        self.manager_ref = manager
         self.view_message_to_update = view_message_to_update
 
         # Limit text input to DISCORD_MODAL_LIMIT characters
@@ -87,17 +93,14 @@ class EditorModal(Modal):
         await interaction.response.defer(ephemeral=True)
         try:
             # Enforce centralized validations and draft saving
-            self.edit_session.validate(text_val)
+            text_val = self.edit_session.validate(text_val)
             await self.edit_session.on_save(text_val)
-            await interaction.followup.send("✅ Content submitted successfully!", ephemeral=True)
+            await interaction.followup.send("⏳ Sent to the server, waiting for confirmation...", ephemeral=True)
 
-            # Standardize feedback: edit the prompt message to remove interactive buttons
-            msg_to_edit = self.edit_session.prompt_message or self.view_message_to_update
-            if msg_to_edit:
-                try:
-                    await msg_to_edit.edit(content=f"✅ **Saved edit** for '{self.edit_session.title}' (ID: {self.edit_session.id}).", view=None)
-                except Exception:
-                    pass
+            # The final ✅/❌ is shown once the server answers (see EditorManager.resolve)
+            if not self.edit_session.prompt_message:
+                self.edit_session.prompt_message = self.view_message_to_update
+            await self.manager_ref.set_pending(self.edit_session, "save")
         except ValueError as e:
             # Safe validation error
             await interaction.followup.send(f"❌ Validation Error: {e}", ephemeral=True)
@@ -139,7 +142,7 @@ class EditorView(View):
             await interaction.response.send_message("❌ This edit session is no longer active.", ephemeral=True)
             return
 
-        modal = EditorModal(self.edit_session, view_message_to_update=interaction.message)
+        modal = EditorModal(self.edit_session, self.manager, view_message_to_update=interaction.message)
         await interaction.response.send_modal(modal)
 
     async def on_cancel_click(self, interaction: discord.Interaction):
@@ -150,12 +153,16 @@ class EditorView(View):
 
         try:
             await self.edit_session.on_cancel()
-            # Use standard response.edit_message for component interactions instead of edit_original_response
-            await interaction.response.edit_message(content=f"❌ **Edit '{self.edit_session.title}' (ID: {self.edit_session.id})** was cancelled.", view=None)
+            await interaction.response.edit_message(content=f"⏳ Cancelling '{self.edit_session.title}' (ID: {self.edit_session.id}), waiting for confirmation...", view=None)
+            self.edit_session.pending = "cancel"
         except Exception as e:
             # Unexpected error: log securely and return generic error message
             logger.exception("Unexpected error during edit cancellation in on_cancel_click:")
-            await interaction.followup.send("❌ An unexpected error occurred while cancelling the edit session.", ephemeral=True)
+            msg = "❌ An unexpected error occurred while cancelling the edit session."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 class EditorManager:
     def __init__(self, mud_session):
@@ -172,6 +179,53 @@ class EditorManager:
 
     def unregister_session(self, session_id):
         return self.active_sessions.pop(session_id, None)
+
+    async def _edit_prompt(self, session, **kwargs):
+        if session.prompt_message:
+            try:
+                await session.prompt_message.edit(**kwargs)
+            except Exception:
+                logger.debug("Failed to edit edit-prompt message", exc_info=True)
+
+    async def set_pending(self, session, action):
+        session.pending = action
+        verb = "Sent to the server" if action == "save" else "Cancelling"
+        await self._edit_prompt(session, content=f"⏳ **{verb}** for '{session.title}' (ID: {session.id}), waiting for confirmation...", view=None)
+
+    async def resolve(self, session_id, ok, detail=None):
+        """
+        Called when the server answers a Write/CancelEdit (or cancels on its own).
+        On success the session ends; on failure the prompt is restored so the user can retry.
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return
+        action = session.pending or "save"
+        session.pending = None
+        if ok:
+            self.unregister_session(session_id)
+            word = "Saved edit" if action == "save" else "Edit cancelled"
+            icon = "✅" if action == "save" else "❌"
+            await self._edit_prompt(session, content=f"{icon} **{word}** for '{session.title}' (ID: {session.id}).", view=None)
+        else:
+            await self._edit_prompt(
+                session,
+                content=f"❌ **Server rejected the {action}** for '{session.title}' (ID: {session.id}): {detail}\n"
+                        f"Your draft is kept, so you can edit and submit again.",
+                view=EditorView(session, self),
+            )
+
+    async def end_all(self, reason):
+        """End every active edit session (e.g. on disconnect), re-attaching unsaved drafts."""
+        sessions = list(self.active_sessions.values())
+        self.active_sessions.clear()
+        for session in sessions:
+            await self._edit_prompt(session, content=f"⚠️ **Edit ended** for '{session.title}' (ID: {session.id}): {reason}", view=None)
+            if session.text:
+                try:
+                    await display_file_view(self.mud_session.channel, f"unsaved_{session.title}", session.text)
+                except Exception:
+                    logger.exception("Failed to re-attach unsaved draft")
 
     def extract_id_from_filename(self, filename):
         # Match IDs from filenames starting with "edit_<id>_" or "edit_<id>.txt"
@@ -229,23 +283,20 @@ class EditorManager:
         # Process the save
         try:
             # Attempt to decode as UTF-8 first, fall back to DEFAULT_TEXT_ENCODING
-            try:
-                text = content_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                text = content_bytes.decode(DEFAULT_TEXT_ENCODING, errors='replace')
+            text = content_bytes.decode(DEFAULT_TEXT_ENCODING, errors='replace')
+            if text.startswith('\ufeff'):
+                text = text[1:]  # strip BOM
 
             # Enforce centralized validations and draft saving on file uploads
-            session.validate(text)
+            text = session.validate(text)
             await session.on_save(text)
 
-            # Standardize feedback: edit the prompt message to reflect the save and remove interactive buttons
+            # Final ✅/❌ is shown once the server answers (see resolve)
             if session.prompt_message:
-                try:
-                    await session.prompt_message.edit(content=f"✅ **Saved edit** for '{session.title}' (ID: {session.id}) via file upload.", view=None)
-                except Exception:
-                    pass
+                await self.set_pending(session, "save")
             else:
-                await self.mud_session.channel.send(f"✅ **Saved edit** for '{session.title}' (ID: {session.id}).")
+                session.pending = "save"
+                await self.mud_session.channel.send(f"⏳ Sent '{session.title}' (ID: {session.id}), waiting for confirmation...")
             return True
         except ValueError as e:
             # Safe validation error
@@ -277,10 +328,7 @@ async def display_file_view(channel, title, text):
     filename = sanitize_filename(title, fallback="view_file")
 
     # Fall back gracefully but attempt to encode appropriately using DEFAULT_TEXT_ENCODING.
-    try:
-        file_bytes = text.encode(DEFAULT_TEXT_ENCODING)
-    except UnicodeEncodeError:
-        file_bytes = text.encode('utf-8', errors='replace')
+    file_bytes = text.encode(DEFAULT_TEXT_ENCODING, errors='replace')
 
     file_fp = io.BytesIO(file_bytes)
     discord_file = discord.File(file_fp, filename=filename)
@@ -291,10 +339,7 @@ async def display_file_edit_prompt(channel, edit_session, manager):
     filename = sanitize_filename(edit_session.title, prefix=prefix, fallback="file")
 
     text_content = edit_session.text if edit_session.text is not None else ""
-    try:
-        file_bytes = text_content.encode(DEFAULT_TEXT_ENCODING)
-    except UnicodeEncodeError:
-        file_bytes = text_content.encode('utf-8', errors='replace')
+    file_bytes = text_content.encode(DEFAULT_TEXT_ENCODING, errors='replace')
 
     file_fp = io.BytesIO(file_bytes)
     discord_file = discord.File(file_fp, filename=filename)

@@ -1,10 +1,63 @@
 import json
+import re
 import asyncio
 import logging
 from .editor import display_file_view, display_file_edit_prompt
 logger = logging.getLogger(__name__)
 
-MUME_CHARACTER_ENCODING = "iso-8859-1"
+ANSI_SGR_RE = re.compile(r'\x1b\[[0-9;:]*m')
+EMOJI_RANGES = (
+    (0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2300, 0x23FF), (0x2B00, 0x2BFF),
+    (0xFE00, 0xFE0F), (0x200D, 0x200D), (0x20E3, 0x20E3),
+)
+
+
+def parse_allowed_ranges(spec):
+    """
+    Parses MUME's `allowed-ranges` into (numeric_ranges, flags), or None if absent/unparseable
+    (in which case the server remains the authority).
+    Accepts ints, [lo, hi] pairs and the strings "ansi-sgr" / "emoji".
+    """
+    if not isinstance(spec, list):
+        return None
+    ranges, flags = [], set()
+    for item in spec:
+        if isinstance(item, bool):
+            return None
+        if isinstance(item, int):
+            ranges.append((item, item))
+        elif isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(x, int) for x in item):
+            ranges.append((item[0], item[1]))
+        elif isinstance(item, str) and item in ("ansi-sgr", "emoji"):
+            flags.add(item)
+        else:
+            return None
+    return ranges, flags
+
+
+def check_allowed_characters(text, allowed):
+    """Raises ValueError naming the first disallowed character (with line:col)."""
+    ranges, flags = allowed
+    if "ansi-sgr" in flags:
+        scan = ANSI_SGR_RE.sub(lambda m: "\0" * len(m.group(0)), text)  # placeholders, same length
+    else:
+        scan = text
+    line, col = 1, 0
+    for ch, orig in zip(scan, text):
+        col += 1
+        if orig == "\n":
+            line, col = line + 1, 0
+            continue
+        cp = ord(orig)
+        if ch == "\0" and orig != "\0":
+            continue  # part of an allowed ANSI SGR sequence
+        if orig == "\t" or any(lo <= cp <= hi for lo, hi in ranges):
+            continue
+        if "emoji" in flags and any(lo <= cp <= hi for lo, hi in EMOJI_RANGES):
+            continue
+        raise ValueError(
+            f"Character {orig!r} (U+{cp:04X}) at line {line}, column {col} is not allowed in this text by the server."
+        )
 
 class MumeClientHandler:
     """
@@ -68,6 +121,7 @@ class MumeClientHandler:
         title = data.get("title", f"edit_{session_id}")
         text = data.get("text", "")
         max_size = data.get("max-size")
+        allowed = parse_allowed_ranges(data.get("allowed-ranges"))
 
         manager = self.get_editor_manager()
         if not manager:
@@ -88,17 +142,11 @@ class MumeClientHandler:
             await self.gmcp.send("MUME.Client.CancelEdit", payload)
 
         def mume_validator(session, updated_text):
-            try:
-                encoded = updated_text.encode(MUME_CHARACTER_ENCODING)
-            except UnicodeEncodeError:
-                raise ValueError(f"Text contains characters that cannot be represented in {MUME_CHARACTER_ENCODING.upper()} (Western European) encoding required by MUME.")
-
-            if b'\x00' in encoded:
+            # Size (UTF-8 bytes) is enforced by EditSession.validate
+            if '\x00' in updated_text:
                 raise ValueError("Text cannot contain NUL bytes.")
-
-            if session.max_size is not None and isinstance(session.max_size, int) and session.max_size >= 0:
-                if len(encoded) > session.max_size:
-                    raise ValueError(f"Text size ({len(encoded)} bytes) exceeds the maximum allowed size of {session.max_size} bytes.")
+            if allowed is not None:
+                check_allowed_characters(updated_text, allowed)
 
         # Register edit session
         edit_session = manager.register_session(
@@ -122,15 +170,7 @@ class MumeClientHandler:
             return
 
         if session_id is not None:
-            if result is True:
-                # Successfully saved
-                manager.unregister_session(session_id)
-            else:
-                # Error saving
-                if self.protocol.session:
-                    self._create_task(self.protocol.session.channel.send(
-                        f"❌ **Server write failed for edit session {session_id}:** {result}"
-                    ))
+            self._create_task(manager.resolve(session_id, result is True, detail=result))
 
     def handle_cancel_response(self, data):
         session_id = data.get("id")
@@ -141,13 +181,9 @@ class MumeClientHandler:
             return
 
         if session_id is not None:
-            if result is True:
-                manager.unregister_session(session_id)
-            else:
-                if self.protocol.session:
-                    self._create_task(self.protocol.session.channel.send(
-                        f"❌ **Server cancel failed for edit session {session_id}:** {result}"
-                    ))
+            if manager.get_session(session_id) and manager.get_session(session_id).pending is None:
+                manager.get_session(session_id).pending = "cancel"  # server-initiated cancel
+            self._create_task(manager.resolve(session_id, result is True, detail=result))
 
     def handle_error(self, data):
         message = data.get("message", "Unknown error")

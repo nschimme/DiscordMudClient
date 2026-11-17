@@ -271,7 +271,7 @@ class TelnetProtocol:
             await asyncio.wait_for(self.writer.drain(), timeout=ANSI_TIMEOUT)
         except Exception as e:
             self.client.log_event(self.user_id, self.username, f"Telnet write failed: {e}")
-            await self.client.close_session(self.user_id)
+            await self.client.close_session(self.user_id, reason=f"Could not send data to the MUD ({type(e).__name__}: {e or 'timed out'}).")
 
     async def send_command(self, cmd, opt=None):
         if opt is not None:

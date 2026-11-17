@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+logger = logging.getLogger(__name__)
 from .config import APP_VERSION
 
 from .mume_gmcp import MumeClientHandler
@@ -51,7 +53,11 @@ class GmcpHandler:
     def handle(self, data: bytes):
         """Parses and dispatches incoming GMCP messages."""
         try:
-            msg = data.decode('utf-8', errors='ignore').strip()
+            try:
+                msg = data.decode('utf-8').strip()
+            except UnicodeDecodeError:
+                logger.warning("GMCP payload is not valid UTF-8; replacing bad bytes: %r", data[:200])
+                msg = data.decode('utf-8', errors='replace').strip()
             if not msg:
                 return
 

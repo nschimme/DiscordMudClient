@@ -143,13 +143,30 @@ class SessionManager:
     def stop_connecting(self, user_id):
         self.connecting.discard(user_id)
 
-    async def close_session(self, user_id):
-        """Centralized session cleanup logic."""
+    async def close_session(self, user_id, reason=None):
+        """
+        Centralized session cleanup logic.
+        If `reason` is given, the user is told about the disconnect (unless the bot is
+        shutting down). Callers that already show their own message (/disconnect, shutdown)
+        pass no reason.
+        """
         session = self.sessions.pop(user_id, None)
         if not session:
             return
 
-        self.client.log_event(user_id, session.username, "Initiating session cleanup.")
+        self.client.log_event(user_id, session.username, f"Initiating session cleanup. Reason: {reason}")
+
+        # Always end pending edit prompts so stale buttons can't be used; keep drafts.
+        try:
+            await session.editor_manager.end_all(reason or "session closed")
+        except Exception as e:
+            self.client.log_event(user_id, session.username, f"Error ending edit sessions: {e}")
+
+        if reason and not self.client.is_shutting_down:
+            try:
+                await session.channel.send(f"⚠️ **Disconnected:** {reason}")
+            except Exception as e:
+                self.client.log_event(user_id, session.username, f"Failed to send disconnect notice: {e}")
 
         try:
             session.stop()

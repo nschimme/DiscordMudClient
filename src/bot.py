@@ -65,13 +65,14 @@ class DiscordMudClient(commands.Bot):
 
         await self.close()
 
-    async def close_session(self, user_id):
+    async def close_session(self, user_id, reason=None):
         """Helper to close session via manager."""
-        await self.session_manager.close_session(user_id)
+        await self.session_manager.close_session(user_id, reason=reason)
 
     async def mud_listener(self, user_id, channel, username):
         session = self.session_manager.get(user_id)
         if not session: return
+        reason = "Connection closed by the MUD server."
         try:
             while True:
                 data = await session.reader.read(8192)
@@ -87,23 +88,19 @@ class DiscordMudClient(commands.Bot):
                         await session.msg_queue.put(True)
                 except DecompressionError as e:
                     self.log_event(user_id, username, f"Decompression error: {e}")
-                    try:
-                        await channel.send("❌ **Compression Error:** The compressed data stream from the MUD is corrupted. Closing session.")
-                    except: pass
+                    reason = "The compressed data stream from the MUD is corrupted."
                     break
         except (ConnectionResetError, BrokenPipeError):
             self.log_event(user_id, username, "Connection reset by peer.")
+            reason = "Connection reset by the MUD server."
         except asyncio.CancelledError:
-            pass
+            # Session was closed by someone else (which reports its own reason).
+            reason = None
         except Exception as e:
             self.log_event(user_id, username, f"Listener Error: {str(e)}")
+            reason = f"Connection error: {e}"
         finally:
-            if not self.is_shutting_down:
-                try:
-                    if self.session_manager.get(user_id):
-                        await channel.send("⚠️ *Connection closed.*")
-                except: pass
-            await self.session_manager.close_session(user_id)
+            await self.session_manager.close_session(user_id, reason=reason)
 
     async def init_session(self, user, channel, url=None):
         user_id = user.id
