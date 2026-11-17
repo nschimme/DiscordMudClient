@@ -1,3 +1,7 @@
+# Discord Mud Client
+# Copyright (C) 2026 Nils Schimmelmann
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# See LICENSE.md for the full license text.
 import asyncio
 import discord
 from .config import MAX_BUFFER_SIZE, SESSION_CLOSE_TIMEOUT

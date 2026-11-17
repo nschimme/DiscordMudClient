@@ -68,3 +68,10 @@ Available Slash Commands:
 - `/terminal <width> <height>`: (DM Only) Set terminal dimensions (width and height). Defaults to 80x24.
 - `/password <pass>`: (DM Only) Enter your password securely.
 - `/send <command>`: (DM Only) Send a command starting with / to the MUD.
+- `/about`: Show version, license and source code information.
+
+---
+
+## 📄 License
+
+Copyright (C) 2026 Nils Schimmelmann. Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE.md). If you run a modified version of this bot, you must offer its source code to its users (see section 13); set `SOURCE_URL` to point at your fork.

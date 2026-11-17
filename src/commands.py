@@ -1,8 +1,12 @@
+# Discord Mud Client
+# Copyright (C) 2026 Nils Schimmelmann
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# See LICENSE.md for the full license text.
 import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
-from .config import MAX_INPUT_LENGTH, ANSI_TIMEOUT
+from .config import MAX_INPUT_LENGTH, ANSI_TIMEOUT, APP_VERSION, SOURCE_URL, DEFAULT_SOURCE_URL
 from .protocol import NAWS_MIN, NAWS_MAX
 
 class MudCommands(commands.Cog):
@@ -143,3 +147,18 @@ class MudCommands(commands.Cog):
                 await interaction.response.send_message("❌ Connection error while sending data.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ You are not currently connected.", ephemeral=True)
+
+    @app_commands.command(name="about", description="About this bot, its license and source code")
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.allowed_installs(guilds=True, users=True)
+    async def about_slash(self, interaction: discord.Interaction):
+        source = SOURCE_URL
+        if APP_VERSION.startswith("sha-") and source == DEFAULT_SOURCE_URL:
+            # Link the exact commit that is running (AGPL section 13)
+            source = f"{SOURCE_URL}/tree/{APP_VERSION[4:]}"
+        await interaction.response.send_message(
+            f"ℹ️ **Discord Mud Client** ({APP_VERSION})\n"
+            f"Free software licensed under the **GNU AGPL v3 or later**.\n"
+            f"Source code: {source}",
+            ephemeral=True,
+        )
